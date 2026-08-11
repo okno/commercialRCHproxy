@@ -39,6 +39,7 @@ See [RCH protocol assessment](docs/RCH_PROTOCOL_ASSESSMENT.md) and [compatibilit
 - JSON structured logs suitable for Wazuh ingestion.
 - Hardened non-root systemd service with only `CAP_NET_BIND_SERVICE`.
 - Debian/Ubuntu install, update, uninstall, service, health, config-check, test, and backup scripts.
+- Separate opt-in helper for a persistent secondary IPv4 address; the proxy service itself never receives `CAP_NET_ADMIN`.
 
 ## Evidence status
 
@@ -67,6 +68,10 @@ git clone https://github.com/okno/commercialRCHproxy.git
 cd commercialRCHproxy
 cp .env.example commercialrchproxy.conf
 nano commercialrchproxy.conf
+sudo apt-get update
+sudo apt-get install -y iputils-arping
+sudo ./scripts/manage_secondary_ip.sh install --config "$PWD/commercialrchproxy.conf"
+sudo ./scripts/manage_secondary_ip.sh check --config "$PWD/commercialrchproxy.conf"
 sudo ./scripts/install.sh --config "$PWD/commercialrchproxy.conf"
 ```
 
@@ -87,13 +92,18 @@ PRINTER_IP=192.0.2.251
 PRINTER_PORT=23
 ```
 
-The installer does not alter the host network. Assign the approved private proxy address explicitly using the site's Debian network configuration before installation. The following is only a documentation example (RFC 5737, not a production address):
+The network helper is explicit and separate from the application installer. It
+adds `LISTEN_IP` as a second IPv4 address on the existing LAN interface; it
+does not create a dummy device. It derives the interface from the local route
+to `PRINTER_IP` and accepts only an existing on-link prefix containing both
+addresses. It never assumes `/24`, changes a route/firewall/DNS setting, or
+connects to port 23. Review the displayed plan and type `INSTALL` only during
+an approved network change window.
 
-```bash
-sudo ip address add 192.0.2.231/24 dev <interface>
-```
-
-Confirm the interface and prefix with the network administrator; do not copy `/24` blindly into a different network. Then:
+If the address is already managed persistently by the host's normal network
+manager, the helper is optional; skip its two commands and run the application
+installer directly. See [secondary network address](docs/NETWORK_ADDRESS.md)
+for safety checks, explicit overrides, rollback, and removal. Then:
 
 ```bash
 sudo systemctl restart commercialrchproxy
@@ -196,6 +206,10 @@ The default removal preserves archived jobs, configuration, and logs. Destructiv
 ```bash
 sudo ./scripts/uninstall.sh --purge
 ```
+
+If the optional secondary-address service was installed, remove it separately
+with `sudo ./scripts/manage_secondary_ip.sh uninstall`. Application purge
+refuses while that service still depends on `/etc/commercialrchproxy`.
 
 See [uninstall behavior](docs/UNINSTALL.md).
 

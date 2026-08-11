@@ -12,6 +12,7 @@ All notable changes follow Semantic Versioning.
 - Conservative XML inspection and evidence-ranked fallback classification.
 - Proxy-rendered clean TXT/PDF sidecars separated from possible RCH originals; production human content remains empty until an authoritative mapping exists.
 - Structured logging, metrics counters, systemd hardening, and Debian operations scripts.
+- Explicit, reversible secondary-IPv4 helper with route/prefix validation, ARP duplicate detection, ownership state, and a separately hardened systemd unit.
 - Automated transport, storage, XML-security, classification, and rendering tests.
 - Official-source, photo, architecture, security, operations, and acceptance documentation.
 

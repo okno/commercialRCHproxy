@@ -107,6 +107,6 @@ Artifacts are written to a random same-directory temporary name, flushed with `f
 - Synthetic status/test-print commands.
 - Store-forward, retry, or replay.
 - Protocol-aware frame/ACK/error decoder without evidence.
-- Automatic interface/VIP changes.
+- Automatic/service-runtime interface or VIP changes. The optional operator-invoked secondary-address helper is a separate root oneshot service; the proxy process never receives its capabilities.
 - Embedded PCAP capture.
 - Database or remote upload.

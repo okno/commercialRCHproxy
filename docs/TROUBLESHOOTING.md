@@ -8,7 +8,20 @@ Symptom:
 Cannot bind 192.0.2.231:23. The IP address is not assigned to this host.
 ```
 
-Check `ip -4 address`, the configured interface/prefix, and duplicate-address policy. The proxy never adds the IP automatically.
+The proxy never adds the IP automatically. If the optional secondary-address
+service is installed, run:
+
+```bash
+sudo ./scripts/manage_secondary_ip.sh check
+systemctl status commercialrchproxy-secondary-ip.service --no-pager
+ip -4 address
+```
+
+An absent address after reboot or network-manager reload can mean the LAN
+interface was recreated after the oneshot service ran. Restart the secondary
+service only in an approved change window, or configure the address natively
+in the host network manager. An interface/prefix mismatch is rejected rather
+than corrected automatically. See [secondary network address](NETWORK_ADDRESS.md).
 
 ## Permission denied on port 23
 

@@ -12,6 +12,10 @@ readonly LOG_DIR="/var/log/commercialrchproxy"
 readonly RUNTIME_DIR="/run/commercialrchproxy"
 readonly LIBEXEC_DIR="/usr/local/libexec/commercialrchproxy"
 readonly UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}"
+readonly SECONDARY_UNIT_PATH="/etc/systemd/system/commercialrchproxy-secondary-ip.service"
+readonly SECONDARY_CONFIG_PATH="${CONFIG_DIR}/secondary-ip.conf"
+readonly SECONDARY_HELPER_PATH="/usr/local/libexec/commercialrchproxy-network/manage_secondary_ip.sh"
+readonly SECONDARY_DROPIN_PATH="/etc/systemd/system/${SERVICE_NAME}.d/10-secondary-ip.conf"
 readonly PURGE_PHRASE="PURGE commercialRCHproxy"
 
 PURGE=0
@@ -105,6 +109,16 @@ acquire_mutation_lock
 [[ "${DATA_DIR}" == "/var/lib/commercialrchproxy" ]] || die "Unsafe DATA_DIR"
 [[ "${LOG_DIR}" == "/var/log/commercialrchproxy" ]] || die "Unsafe LOG_DIR"
 
+if [[ "${PURGE}" -eq 1 ]] && \
+   { [[ -e "${SECONDARY_UNIT_PATH}" || -L "${SECONDARY_UNIT_PATH}" || \
+        -e "${SECONDARY_CONFIG_PATH}" || -L "${SECONDARY_CONFIG_PATH}" || \
+        -e "${SECONDARY_HELPER_PATH}" || -L "${SECONDARY_HELPER_PATH}" || \
+        -e "${SECONDARY_DROPIN_PATH}" || -L "${SECONDARY_DROPIN_PATH}" ]] || \
+     systemctl is-active --quiet commercialrchproxy-secondary-ip.service || \
+     systemctl is-enabled --quiet commercialrchproxy-secondary-ip.service; }; then
+    die "The optional secondary-IP service still depends on ${CONFIG_DIR}. Run /usr/local/libexec/commercialrchproxy-network/manage_secondary_ip.sh uninstall (or the checkout copy) first, then rerun the purge."
+fi
+
 systemctl disable --now "${SERVICE_NAME}" >/dev/null 2>&1 || true
 rm -f -- "${UNIT_PATH}"
 systemctl daemon-reload
@@ -133,6 +147,7 @@ else
     printf 'PRESERVED: captured jobs in %s\n' "${DATA_DIR}"
     printf 'PRESERVED: logs in %s\n' "${LOG_DIR}"
     printf 'PRESERVED: service account %s so retained file ownership remains stable.\n' "${SERVICE_USER}"
+    printf 'PRESERVED: optional secondary-IP service/address state, if separately installed.\n'
 fi
 printf 'PASS: application, service unit, and installed operations scripts were removed.\n'
 printf 'PASS: no host network settings were changed and no network connection was opened.\n'

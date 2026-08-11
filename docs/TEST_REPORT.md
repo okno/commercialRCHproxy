@@ -28,6 +28,7 @@
 | Candidate document labels | Photo phrases populate candidate fields while authoritative `document_type` remains `null` | PASS |
 | Renderer fixture | Photo-derived proxy PDF is readable; this does not establish production content or physical fidelity | PASS |
 | Health/config check | No live network connection attempted | PASS |
+| Secondary IPv4 helper | Route/prefix/scope validation, owned/borrowed/pending state, rollback, and no port-23 probe | PASS (isolated namespace; target-host activation remains untested) |
 | Tail timeout evidence | A stalled tail remains explicitly incomplete even after response bytes | PASS |
 | Opposite-direction failure | A pump transport failure cancels the other pump immediately rather than waiting/forwarding further bytes | PASS |
 | FIN propagation failure | Failed half-close is a transport error, never clean EOF | PASS |
@@ -42,10 +43,18 @@ environment under WSL from the hash-locked, binary-only development dependency
 set, then reported `46 passed`. The same 46 tests passed under Windows Python
 3.14.5. Both deployment and development locks resolved in binary-only dry runs
 for CPython 3.11 on Linux x86_64 and aarch64. Ruff and Bandit returned no
-findings, all 12 shell scripts passed `bash -n` and ShellCheck, and the
+findings, all 13 shell scripts passed `bash -n` and ShellCheck, and the
 fail-closed secret/evidence guard passed. The operations audit also parsed the
 service with `systemd-analyze security --offline=yes` at exposure `1.6 OK`;
 target-host installation remains untested.
+
+The secondary-address helper was exercised as root in isolated mount/network
+namespaces on WSL Debian 13 (systemd 257): real `ip` operations covered owned,
+borrowed, pending, repeated-up, scope, prefix, interface-replacement, and
+post-delete behavior. Its generated unit passed real `systemd-analyze verify`;
+controlled `systemctl` and `arping` doubles isolated service-manager and L2
+effects. This does not replace Debian 12 boot, real systemd lifecycle, physical
+link, or duplicate-host testing.
 
 Run:
 
@@ -67,6 +76,8 @@ Run:
 - Physical-vs-PULITO-vs-PDF comparison and layout fidelity.
 - Any installed-device PaDES availability, retrieval format, original-byte extraction, or signature validation.
 - Debian/systemd privileged-port integration on the target host.
+- Secondary-address boot/stop behavior on Debian 12/systemd 252, a real LAN
+  interface, a real `iputils-arping` duplicate responder, and host network-manager reload.
 - Management software acceptance, retries, timing, and operational rollback.
 
 These are recorded as gates, not silently marked passed.

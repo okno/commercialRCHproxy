@@ -5,7 +5,7 @@
 - Dedicated Debian/Ubuntu host on the authorized hotel LAN.
 - Python version supported by `pyproject.toml`.
 - Physical RCH Print! F remains at its approved private address (`192.0.2.251` is the public documentation placeholder).
-- Approved private proxy address assigned to the host (`192.0.2.231` is the public documentation placeholder).
+- Approved private proxy address assigned to the host, or approval to add it with the explicit secondary-address helper (`192.0.2.231` is the public documentation placeholder).
 - Management software change window and rollback plan.
 - Enough protected disk space for receipt archives.
 - Packet-capture plan from `PACKET_CAPTURE.md`.
@@ -19,11 +19,19 @@ git clone https://github.com/okno/commercialRCHproxy.git
 cd commercialRCHproxy
 cp .env.example commercialrchproxy.conf
 nano commercialrchproxy.conf
+sudo apt-get update
+sudo apt-get install -y iputils-arping
+sudo ./scripts/manage_secondary_ip.sh install --config "$PWD/commercialrchproxy.conf"
+sudo ./scripts/manage_secondary_ip.sh check --config "$PWD/commercialrchproxy.conf"
 sudo ./scripts/install.sh --config "$PWD/commercialrchproxy.conf"
 ```
 
 The copied file is ignored by Git. Replace both RFC 5737 documentation
 addresses with the approved private site values before running the installer.
+The two helper commands are needed only when `LISTEN_IP` is not already
+assigned persistently by the host network manager. The helper prints its
+derived interface/prefix plan and requires the exact confirmation `INSTALL`.
+Read [secondary network address](NETWORK_ADDRESS.md) before approving it.
 On later runs the installer preserves `/etc/commercialrchproxy/commercialrchproxy.conf`
 and rejects `--config`, so configuration cannot be overwritten accidentally.
 
@@ -36,7 +44,10 @@ The installer creates:
 - `/var/log/commercialrchproxy` with mode `0750`;
 - hardened `commercialrchproxy.service`.
 
-It does not configure an IP address, firewall, route, management software, RCH device, or Wazuh agent.
+The application installer never configures an IP address, firewall, route,
+management software, RCH device, or Wazuh agent. Only the separately invoked,
+opt-in secondary-address helper changes an address, and it does not run from
+install, update, start, or application service code.
 
 ## Privileged port
 
@@ -49,6 +60,10 @@ NoNewPrivileges=true
 ```
 
 The process is not run as root.
+
+If installed, `commercialrchproxy-secondary-ip.service` is a distinct root
+oneshot unit with only the network capabilities required for address and ARP
+operations. Those capabilities are never added to `commercialrchproxy.service`.
 
 Python build/runtime dependencies are installed into the isolated release
 virtual environment from `requirements-deployment.lock` with exact versions,
@@ -68,6 +83,7 @@ that rollback.
 
 ```bash
 sudoedit /etc/commercialrchproxy/commercialrchproxy.conf
+sudo ./scripts/manage_secondary_ip.sh check
 sudo ./scripts/check_config.sh
 sudo systemctl restart commercialrchproxy
 sudo ./scripts/healthcheck.sh

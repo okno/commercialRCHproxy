@@ -42,7 +42,23 @@ This checks parsing, local IP assignment, directories, permissions, space, and s
 
 ## Network address
 
-The application never adds `LISTEN_IP`. Configure it persistently with the site's network manager. Confirm interface, prefix, duplicate-address detection, and change window with the network administrator.
+The application never adds `LISTEN_IP`. Prefer the site's normal network
+manager for native persistence. When an explicitly managed secondary address
+is appropriate, the separate `manage_secondary_ip.sh` helper can add exactly
+that address and install its own oneshot service. It does not run automatically
+from application install/update/start.
+
+```bash
+sudo apt-get install -y iputils-arping
+sudo ./scripts/manage_secondary_ip.sh install
+sudo ./scripts/manage_secondary_ip.sh check
+```
+
+The helper requires an existing direct/on-link route to `PRINTER_IP`, derives
+a unique prefix already present on that interface, and performs ARP duplicate
+detection. It does not infer `/24`, alter routes/firewall/DNS, or establish that
+the address plan is authorized or collision-free for the future. See
+[secondary network address](NETWORK_ADDRESS.md).
 
 Startup reports:
 
