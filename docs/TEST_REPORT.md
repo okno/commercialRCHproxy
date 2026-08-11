@@ -33,7 +33,7 @@
 | FIN propagation failure | Failed half-close is a transport error, never clean EOF | PASS |
 | Slow archive isolation | Hash/render/fsync work does not hold transport sockets or the exclusive device-session lock | PASS |
 | Mandatory manifest | `SAVE_JSON=false` is rejected | PASS |
-| Static/security checks | Ruff, Bandit, compileall, Bash syntax, ShellCheck, secret/evidence guard | PASS |
+| Static/security checks | Ruff, Bandit, compileall, workflow/Bash syntax, ShellCheck, secret/evidence guard | PASS |
 
 ## Validation snapshot
 

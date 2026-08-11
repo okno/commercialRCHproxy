@@ -82,6 +82,13 @@ installed_package="$("${temporary_root}/venv/bin/python" -c \
 "${temporary_root}/venv/bin/python" -m bandit -q -r "${PROJECT_ROOT}/src" -c "${PROJECT_ROOT}/pyproject.toml"
 "${temporary_root}/venv/bin/python" -m pytest -p no:cacheprovider "${PROJECT_ROOT}/tests"
 
+for workflow_path in "${PROJECT_ROOT}"/.github/workflows/*.yml; do
+    [[ -f "${workflow_path}" ]] || continue
+    "${temporary_root}/venv/bin/python" -c \
+        'from pathlib import Path; import sys, yaml; yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))' \
+        "${workflow_path}"
+done
+
 for script_path in "${PROJECT_ROOT}"/scripts/*.sh; do
     bash -n "${script_path}"
 done
@@ -89,5 +96,5 @@ if [[ -f "${PROJECT_ROOT}/scripts/secret_check.sh" ]]; then
     command -v rg >/dev/null 2>&1 || die "ripgrep is required by scripts/secret_check.sh."
     bash "${PROJECT_ROOT}/scripts/secret_check.sh"
 fi
-printf 'PASS: compile, lint, security, Python tests, shell syntax, and evidence guards completed.\n'
+printf 'PASS: compile, lint, security, Python tests, workflow/shell syntax, and evidence guards completed.\n'
 printf 'RCH protocol reachability: NOT PROBED (requires PCAP/manual evidence).\n'
