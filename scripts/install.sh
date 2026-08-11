@@ -165,7 +165,7 @@ if [[ "${INSTALL_SYSTEM_PACKAGES}" -eq 1 ]]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends \
-        ca-certificates coreutils iproute2 python3 python3-pip python3-venv ripgrep tar util-linux
+        ca-certificates coreutils iproute2 python3 python3-pip python3-venv tar util-linux
 fi
 
 select_python() {

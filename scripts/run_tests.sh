@@ -93,8 +93,8 @@ for script_path in "${PROJECT_ROOT}"/scripts/*.sh; do
     bash -n "${script_path}"
 done
 if [[ -f "${PROJECT_ROOT}/scripts/secret_check.sh" ]]; then
-    command -v rg >/dev/null 2>&1 || die "ripgrep is required by scripts/secret_check.sh."
-    bash "${PROJECT_ROOT}/scripts/secret_check.sh"
+    PYTHON_BIN="${temporary_root}/venv/bin/python" \
+        bash "${PROJECT_ROOT}/scripts/secret_check.sh"
 fi
 printf 'PASS: compile, lint, security, Python tests, workflow/shell syntax, and evidence guards completed.\n'
 printf 'RCH protocol reachability: NOT PROBED (requires PCAP/manual evidence).\n'
