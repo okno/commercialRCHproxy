@@ -1,0 +1,27 @@
+HOTEL ESEMPIO
+SOCIETA ESEMPIO S.R.L.
+VIA ESEMPIO N.4
+00000 CITTA -XX-
+TELEFONO 0000-0000000
+C.F. - P.IVA 00000000000
+
+DOCUMENTO COMMERCIALE
+di vendita o prestazione
+
+DESCRIZIONE                     IVA    Prezzo(€)
+
+Prodotto di esempio              00%       0,00
+#
+#Tavolo: 00-X
+#
+------------------------------------------------
+TOTALE COMPLESSIVO                         0,00
+di cui IVA                                 0,00
+
+Pagamento contante                         0,00
+Importo pagato                             0,00
+
+01-01-2026 12:00
+DOCUMENTO N. 0001-0001
+
+RT XXXXXXXXXXX

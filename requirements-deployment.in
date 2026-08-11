@@ -1,0 +1,8 @@
+# Exact versions reviewed in the 2026-08-11 Windows/WSL validation matrix.
+# Regenerate requirements-deployment.lock deliberately when upgrading.
+pip==26.2.1
+setuptools==84.0.0
+wheel==0.47.0
+defusedxml==0.7.1
+reportlab==4.5.1
+pillow==12.2.0

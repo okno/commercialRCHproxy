@@ -1,0 +1,118 @@
+"""Forensic manifest construction with explicit evidence boundaries."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from commercialrchproxy import __version__
+from commercialrchproxy.capture.jobs import CapturedJob
+from commercialrchproxy.config import Config
+from commercialrchproxy.rch.protocol import ProtocolAnalysis
+
+
+def build_manifest(
+    job: CapturedJob,
+    analysis: ProtocolAnalysis,
+    config: Config,
+    *,
+    status: str,
+    hashes: dict[str, str | None],
+    files: dict[str, str | None],
+    render_errors: list[str],
+) -> dict[str, Any]:
+    classification = analysis.classification
+    xml = analysis.xml
+    human_render_status = str(
+        analysis.document.metadata.get("human_render_status", "unavailable_unconfirmed_field_mapping")
+    )
+    return {
+        "project": "commercialRCHproxy",
+        "job_id": job.job_id,
+        "session_id": job.session_id,
+        "timestamp_start": job.started_at.isoformat(),
+        "timestamp_end": (job.ended_at or job.started_at).isoformat(),
+        "client_ip": job.client_ip,
+        "client_port": job.client_port,
+        "proxy_ip": job.proxy_ip,
+        "proxy_port": job.proxy_port,
+        "printer_ip": job.printer_ip,
+        "printer_port": job.printer_port,
+        "reported_device_model": "RCH Print! F",
+        "reported_device_source": "user_request",
+        "reported_device_evidence": "OBSERVED",
+        "reported_device_identity_verification": "UNCONFIRMED",
+        "reported_protocol_profile": "RCH RT v.10 XML7",
+        "reported_protocol_profile_source": "user_request",
+        "reported_protocol_profile_evidence": "OBSERVED",
+        "reported_protocol_profile_semantics": "UNCONFIRMED",
+        "protocol_version_detected": None,
+        "firmware_detected": None,
+        "device_model_detected": None,
+        "implementation_transport": analysis.implementation_transport,
+        "transport_detected": analysis.detected_transport,
+        "transport_evidence": analysis.transport_evidence,
+        "telnet_iac_candidate_bytes_observed": analysis.telnet_iac_candidate_bytes_observed,
+        "telnet_negotiation_confirmed": False,
+        "framing_confirmed": analysis.framing_confirmed,
+        "document_type": None,
+        "observed_variant": None,
+        "classification_source": None,
+        "classification_confidence": 0.0,
+        "classification_evidence": "UNCONFIRMED",
+        "candidate_printed_class": classification.candidate_printed_class,
+        "candidate_observed_variant": classification.candidate_observed_variant,
+        "candidate_classification_source": classification.source,
+        "candidate_classification_confidence": classification.confidence,
+        "candidate_classification_evidence": classification.evidence,
+        "business_role": None,
+        "legal_status": "unverified",
+        "protocol_identifier": None,
+        "bytes_read_from_client": job.bytes_captured_from_client,
+        "bytes_stored_request": len(job.request),
+        "bytes_local_write_drain_to_printer": job.bytes_local_write_drain_to_printer,
+        "bytes_arrived_at_printer": None,
+        "bytes_read_from_printer": job.bytes_captured_from_printer,
+        "bytes_stored_response": len(job.response),
+        "bytes_local_write_drain_to_client": job.bytes_local_write_drain_to_client,
+        "bytes_arrived_at_client": None,
+        "delivery_evidence": "UNCONFIRMED_WITHOUT_PCAP",
+        "request_frames": None,
+        "response_frames": None,
+        "protocol_status": analysis.response.protocol_status,
+        "printer_status": analysis.response.printer_status,
+        "application_success": analysis.response.application_success,
+        "rch_error_code": analysis.response.error_code,
+        "rch_error_description": analysis.response.error_description,
+        "xml_candidate_found": xml.candidate_found,
+        "xml_candidate_start": xml.candidate_start,
+        "xml_candidate_end": xml.candidate_end,
+        "xml_well_formed_generic": xml.well_formed_generic,
+        "xml7_confirmed": xml.xml7_confirmed,
+        "xml_root_qname": xml.root_qname,
+        "xml_root_local_name": xml.root_local_name,
+        "xml_evidence": xml.evidence,
+        "xml_analysis_error": xml.error,
+        "human_render_status": human_render_status,
+        "raw_sha256": hashes.get("raw"),
+        "response_raw_sha256": hashes.get("response_raw"),
+        "clean_txt_sha256": hashes.get("clean_txt"),
+        "pdf_sha256": hashes.get("pdf"),
+        "files": files,
+        "pdf_kind": "PDF_PROXY_RENDERED" if files.get("pdf") else None,
+        "pdf_rch_original": None,
+        "renderer_parameters": {
+            "paper_width_mm": config.renderer_paper_width_mm,
+            "characters_per_line": config.renderer_characters_per_line,
+            "evidence": "DOCUMENTED_BROCHURE_DEFAULTS_NOT_VERIFIED_ON_INSTALLED_DEVICE",
+            "physical_fidelity": "UNCONFIRMED",
+        },
+        "parser_version": __version__,
+        "parser_status": analysis.parser_status,
+        "job_boundary_source": job.boundary_source,
+        "job_boundary_confidence": job.boundary_confidence,
+        "transport_status": job.transport_status,
+        "raw_complete": job.capture_complete,
+        "capture_error": job.capture_error,
+        "render_errors": render_errors,
+        "status": status,
+    }

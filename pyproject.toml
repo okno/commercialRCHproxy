@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "commercialRCHproxy"
+version = "0.1.0"
+description = "Evidence-gated full-duplex relay and forensic capture candidate for RCH Print! F"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "commercialRCHproxy contributors" }]
+dependencies = [
+  "defusedxml>=0.7.1,<1",
+  "reportlab>=4.0,<5",
+]
+
+[project.urls]
+Repository = "https://github.com/okno/commercialRCHproxy"
+Issues = "https://github.com/okno/commercialRCHproxy/issues"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "pytest-asyncio>=0.23,<1",
+  "pypdf>=5,<7",
+  "ruff>=0.12,<1",
+  "bandit[toml]>=1.8,<2",
+]
+
+[project.scripts]
+commercialrchproxy = "commercialrchproxy.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+  "ignore:.*asyncio\\..*deprecated.*:DeprecationWarning:pytest_asyncio.*",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["commercialrchproxy"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ASYNC109", "ASYNC240"]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
+skips = []
