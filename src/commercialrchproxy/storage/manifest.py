@@ -25,6 +25,31 @@ def build_manifest(
     human_render_status = str(
         analysis.document.metadata.get("human_render_status", "unavailable_unconfirmed_field_mapping")
     )
+    protocol = analysis.protocol
+    document_summaries = []
+    if protocol is not None:
+        document_summaries = [
+            {
+                "document_id": document.document_id,
+                "document_type": document.document_type,
+                "evidence": document.evidence,
+                "complete": document.complete,
+                "source_frame_ids": list(document.frame_ids),
+                "source_start_offset": document.start_offset,
+                "source_end_offset": document.end_offset,
+            }
+            for document in protocol.documents
+        ]
+    rendered_pdf_files = {
+        key: value
+        for key, value in files.items()
+        if value is not None and (key == "pdf" or key.endswith("_pdf"))
+    }
+    rendered_pdf_hashes = {
+        key: value
+        for key, value in hashes.items()
+        if value is not None and (key == "pdf" or key.endswith("_pdf"))
+    }
     return {
         "project": "commercialRCHproxy",
         "job_id": job.job_id,
@@ -54,11 +79,11 @@ def build_manifest(
         "telnet_iac_candidate_bytes_observed": analysis.telnet_iac_candidate_bytes_observed,
         "telnet_negotiation_confirmed": False,
         "framing_confirmed": analysis.framing_confirmed,
-        "document_type": None,
-        "observed_variant": None,
-        "classification_source": None,
-        "classification_confidence": 0.0,
-        "classification_evidence": "UNCONFIRMED",
+        "document_type": classification.document_type,
+        "observed_variant": analysis.document.observed_variant,
+        "classification_source": classification.source if classification.document_type else None,
+        "classification_confidence": classification.confidence if classification.document_type else 0.0,
+        "classification_evidence": classification.evidence if classification.document_type else "UNCONFIRMED",
         "candidate_printed_class": classification.candidate_printed_class,
         "candidate_observed_variant": classification.candidate_observed_variant,
         "candidate_classification_source": classification.source,
@@ -76,8 +101,11 @@ def build_manifest(
         "bytes_local_write_drain_to_client": job.bytes_local_write_drain_to_client,
         "bytes_arrived_at_client": None,
         "delivery_evidence": "UNCONFIRMED_WITHOUT_PCAP",
-        "request_frames": None,
-        "response_frames": None,
+        "request_frames": len(protocol.request_framing.frames) if protocol is not None else None,
+        "response_frames": len(protocol.response_framing.frames) if protocol is not None else None,
+        "response_ack_count": len(protocol.response_framing.acks) if protocol is not None else None,
+        "document_count": len(document_summaries),
+        "documents": document_summaries,
         "protocol_status": analysis.response.protocol_status,
         "printer_status": analysis.response.printer_status,
         "application_success": analysis.response.application_success,
@@ -96,9 +124,13 @@ def build_manifest(
         "raw_sha256": hashes.get("raw"),
         "response_raw_sha256": hashes.get("response_raw"),
         "clean_txt_sha256": hashes.get("clean_txt"),
+        "receipt_txt_sha256": hashes.get("receipt_txt"),
+        "parsed_json_sha256": hashes.get("parsed_json"),
         "pdf_sha256": hashes.get("pdf"),
         "files": files,
-        "pdf_kind": "PDF_PROXY_RENDERED" if files.get("pdf") else None,
+        "pdf_kind": "PDF_PROXY_RENDERED" if rendered_pdf_files else None,
+        "rendered_pdf_files": rendered_pdf_files,
+        "rendered_pdf_sha256": rendered_pdf_hashes,
         "pdf_rch_original": None,
         "renderer_parameters": {
             "paper_width_mm": config.renderer_paper_width_mm,
@@ -108,6 +140,13 @@ def build_manifest(
         },
         "parser_version": __version__,
         "parser_status": analysis.parser_status,
+        "parser_error": analysis.parser_error,
+        "raw_event_count": len(job.chunks),
+        "raw_event_count_observed": job.capture_event_count_observed,
+        "timeline_complete": job.timeline_complete,
+        "timeline_error": job.timeline_error,
+        "raw_event_first_timestamp": job.chunks[0].timestamp if job.chunks else None,
+        "raw_event_last_timestamp": job.chunks[-1].timestamp if job.chunks else None,
         "job_boundary_source": job.boundary_source,
         "job_boundary_confidence": job.boundary_confidence,
         "transport_status": job.transport_status,

@@ -10,7 +10,9 @@ Baseline reviewed: public `main`/`v2.0.0` commit `0ae6fc1b9249d822c3cb05a0e8a5e2
 - Half-close/FIN/RST/backpressure test concepts.
 - Generated IDs, SHA-256, atomic publication, `fsync`, no-follow/symlink defenses.
 - Dedicated service user, strict systemd sandbox, conservative uninstall.
-- Strict/bounded passive analysis separated from rendering; production human output remains empty until authoritative RCH mapping exists.
+- Historical 0.1.0 baseline kept production human output empty without an
+  authoritative mapping. Version 0.2.0 adds a bounded, evidence-labelled
+  captured-field reconstruction whose command roles remain `INFERRED`.
 
 The new implementation is packaged and independently written; no modified `printproxy` file is part of this repository.
 

@@ -1,5 +1,14 @@
 # Observed RCH document types
 
+> Version note: most of this document records the conservative 0.1.0
+> photo-only gate and is retained as design history. Version 0.2.0 now provides
+> an `INFERRED` command-sequence classifier and captured-field reconstruction
+> for the supplied commercial and management stream families. Framing and
+> literal bytes are `CONFIRMED`; official command meanings and
+> printer-generated fields remain unknown. See
+> [receipt parser](RECEIPT_PARSER.md) and
+> [current protocol analysis](RCH_PROTOCOL_ANALYSIS.md).
+
 ## Scope, evidence, and public-fixture redaction
 
 This document records the structure of three paper documents visible in the

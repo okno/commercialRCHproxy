@@ -10,13 +10,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from commercialrchproxy import __version__
 from commercialrchproxy.capture.hashing import sha256_bytes, sha256_file
 from commercialrchproxy.capture.jobs import CapturedJob
 from commercialrchproxy.config import Config
-from commercialrchproxy.rch.protocol import analyze_copies
+from commercialrchproxy.rch.protocol import analyze_copies, unavailable_analysis
 from commercialrchproxy.render.clean_text import render_clean_text
 from commercialrchproxy.render.pdf import render_pdf
 from commercialrchproxy.render.technical_text import render_technical_text
+from commercialrchproxy.render.timeline import render_timeline_jsonl
 from commercialrchproxy.storage.manifest import build_manifest
 
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9_.-]")
@@ -121,7 +123,6 @@ class JobStorage:
         return directory
 
     def archive(self, job: CapturedJob) -> ArchiveResult:
-        analysis = analyze_copies(job.request_bytes, job.response_bytes)
         directory = self._directory_for(job)
         timestamp = job.started_at.strftime("%Y%m%dT%H%M%S.%fZ")
         base = f"{timestamp}_{job.job_id}"
@@ -129,7 +130,10 @@ class JobStorage:
             "raw": directory / f"{base}.raw",
             "response_raw": directory / f"{base}.response.raw",
             "technical_txt": directory / f"{base}.txt",
+            "timeline_jsonl": directory / f"{base}.timeline.jsonl",
             "clean_txt": directory / f"{base}.PULITO.txt",
+            "receipt_txt": directory / f"{base}.receipt.txt",
+            "parsed_json": directory / f"{base}.parsed.json",
             "pdf": directory / f"{base}.pdf",
             "json": directory / f"{base}.json",
         }
@@ -138,6 +142,8 @@ class JobStorage:
             "raw": sha256_bytes(job.request_bytes),
             "response_raw": sha256_bytes(job.response_bytes) if job.response else None,
             "clean_txt": None,
+            "receipt_txt": None,
+            "parsed_json": None,
             "pdf": None,
         }
         render_errors: list[str] = []
@@ -149,6 +155,25 @@ class JobStorage:
                 atomic_write_bytes(paths["response_raw"], job.response_bytes)
                 written["response_raw"] = paths["response_raw"]
 
+        # Publish the immutable directional copies and their receive timeline
+        # before invoking any protocol decoder.  A future parser regression
+        # must never be able to prevent preservation of the original evidence.
+        if self.config.save_technical_txt:
+            try:
+                timeline = render_timeline_jsonl(job.chunks).encode("utf-8")
+                atomic_write_bytes(paths["timeline_jsonl"], timeline)
+                written["timeline_jsonl"] = paths["timeline_jsonl"]
+            except Exception as exc:
+                render_errors.append(f"timeline_jsonl: {type(exc).__name__}: {exc}")
+
+        try:
+            analysis = analyze_copies(job.request_bytes, job.response_bytes)
+        except Exception as exc:
+            # Parsing is a sidecar operation.  The relay already forwarded the
+            # original bytes and the RAW copies above remain authoritative.
+            render_errors.append(f"parser: {type(exc).__name__}: {exc}")
+            analysis = unavailable_analysis(job.request_bytes, job.response_bytes, exc)
+
         if self.config.save_technical_txt:
             try:
                 technical = render_technical_text(job.chunks, analysis).encode("utf-8")
@@ -157,39 +182,105 @@ class JobStorage:
             except Exception as exc:
                 render_errors.append(f"technical_txt: {type(exc).__name__}: {exc}")
 
-        clean = render_clean_text(analysis.document)
+        clean = ""
+        try:
+            receipt_texts = [render_clean_text(model) for model in analysis.documents]
+            nonempty_receipts = [text for text in receipt_texts if text]
+            if len(nonempty_receipts) == 1:
+                clean = nonempty_receipts[0]
+            elif nonempty_receipts:
+                clean = "\n\f\n".join(text.rstrip("\n") for text in nonempty_receipts) + "\n"
+            elif not analysis.documents:
+                clean = render_clean_text(analysis.document)
+        except Exception as exc:
+            render_errors.append(f"receipt_render: {type(exc).__name__}: {exc}")
         if self.config.save_clean_txt:
             try:
                 atomic_write_bytes(paths["clean_txt"], clean.encode("utf-8"))
                 written["clean_txt"] = paths["clean_txt"]
                 hashes["clean_txt"] = sha256_file(paths["clean_txt"])
+                atomic_write_bytes(paths["receipt_txt"], clean.encode("utf-8"))
+                written["receipt_txt"] = paths["receipt_txt"]
+                hashes["receipt_txt"] = sha256_file(paths["receipt_txt"])
             except Exception as exc:
-                render_errors.append(f"clean_txt: {type(exc).__name__}: {exc}")
+                render_errors.append(f"receipt_txt: {type(exc).__name__}: {exc}")
+
+        if self.config.save_json:
+            try:
+                reconstruction = {
+                    "schema": "commercialrchproxy.parsed.v1",
+                    "parser_version": __version__,
+                    "job_id": job.job_id,
+                    "session_id": job.session_id,
+                    "timestamp_start": job.started_at.isoformat(),
+                    "timestamp_end": (job.ended_at or job.started_at).isoformat(),
+                    "request_sha256": hashes["raw"],
+                    "response_sha256": hashes["response_raw"],
+                    "protocol": analysis.protocol.to_dict() if analysis.protocol is not None else None,
+                    "parser_status": analysis.parser_status,
+                    "parser_error": analysis.parser_error,
+                }
+                atomic_write_bytes(
+                    paths["parsed_json"],
+                    (json.dumps(reconstruction, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+                )
+                written["parsed_json"] = paths["parsed_json"]
+                hashes["parsed_json"] = sha256_file(paths["parsed_json"])
+            except Exception as exc:
+                render_errors.append(f"parsed_json: {type(exc).__name__}: {exc}")
 
         if self.config.save_pdf:
             try:
-                atomic_generate(
-                    paths["pdf"],
-                    lambda temp: render_pdf(
-                        analysis.document,
-                        temp,
-                        paper_width_mm=self.config.renderer_paper_width_mm,
-                        characters_per_line=self.config.renderer_characters_per_line,
-                    ),
-                )
-                written["pdf"] = paths["pdf"]
-                hashes["pdf"] = sha256_file(paths["pdf"])
+                pdf_models = analysis.documents or (analysis.document,)
+                if len(pdf_models) > 1:
+                    # Preserve the historical base PDF path for integrations;
+                    # it represents the first reconstructed document.  The
+                    # complete set is also emitted with explicit per-document
+                    # names below.
+                    atomic_generate(
+                        paths["pdf"],
+                        lambda temp: render_pdf(
+                            pdf_models[0],
+                            temp,
+                            paper_width_mm=self.config.renderer_paper_width_mm,
+                            characters_per_line=self.config.renderer_characters_per_line,
+                        ),
+                    )
+                    written["pdf"] = paths["pdf"]
+                    hashes["pdf"] = sha256_file(paths["pdf"])
+                for index, model in enumerate(pdf_models, 1):
+                    key = "pdf" if len(pdf_models) == 1 else f"document_{index:03d}_pdf"
+                    path = paths["pdf"] if key == "pdf" else directory / f"{base}.document-{index:03d}.pdf"
+                    atomic_generate(
+                        path,
+                        lambda temp, selected=model: render_pdf(
+                            selected,
+                            temp,
+                            paper_width_mm=self.config.renderer_paper_width_mm,
+                            characters_per_line=self.config.renderer_characters_per_line,
+                        ),
+                    )
+                    written[key] = path
+                    hashes[key] = sha256_file(path)
             except Exception as exc:
                 render_errors.append(f"pdf: {type(exc).__name__}: {exc}")
 
         if not job.capture_complete:
             status = "capture_incomplete"
+        elif not job.timeline_complete:
+            status = "archived_timeline_partial_application_status_unknown"
         elif render_errors:
             status = "archived_render_partial_application_status_unknown"
         else:
             status = "archived_application_status_unknown"
 
-        file_manifest = {key: (path.name if key in written else None) for key, path in paths.items() if key != "json"}
+        file_manifest = {
+            key: (path.name if key in written else None)
+            for key, path in paths.items()
+            if key != "json"
+        }
+        for key, path in written.items():
+            file_manifest.setdefault(key, path.name)
         if self.config.save_json:
             file_manifest["json"] = paths["json"].name
         manifest = build_manifest(

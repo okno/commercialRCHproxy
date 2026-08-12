@@ -13,6 +13,13 @@
 
 [INFERRED] Only DOCUMENTED or OBSERVED evidence may drive protocol-critical behavior. INFERRED evidence may guide passive diagnostics and fallbacks. UNCONFIRMED behavior must not be encoded as a protocol rule.
 
+For new reconstruction work, `CONFIRMED` is used instead of `OBSERVED` for a
+finding reproduced from the supplied byte corpus, and `UNKNOWN` replaces
+`UNCONFIRMED`. Older gate entries retain their original labels. The current
+byte-level result is authoritative in
+[RCH_PROTOCOL_ANALYSIS.md](RCH_PROTOCOL_ANALYSIS.md); this broader assessment
+still tracks official-document and production-acceptance gaps.
+
 ## Identification
 
 | Item | Status | Assessment |
@@ -46,11 +53,11 @@
 |---|---|---|
 | Ethernet connectivity | DOCUMENTED | RCH sources document Ethernet connectivity to Print! F. |
 | Port 23 | DOCUMENTED | RCH XTools v4.0.0 documents port 23 for Print! F. |
-| TCP | UNCONFIRMED | Accessible RCH sources do not identify TCP. A port number and Ethernet UI are insufficient proof. |
+| TCP | OBSERVED / UNCONFIRMED as official property | The supplied proxy artifacts identify distinct TCP sessions. Accessible RCH sources still do not identify TCP; a port number and Ethernet UI are insufficient official proof. |
 | UDP | UNCONFIRMED | Accessible RCH sources do not identify or exclude UDP. |
 | Raw byte stream | UNCONFIRMED | No accessible official source calls the port a raw stream. |
 | Telnet | UNCONFIRMED | No accessible official source documents Telnet negotiation or Telnet option handling. Port 23 alone is not evidence of Telnet. |
-| Connection persistence | UNCONFIRMED | Reuse, one-command-per-connection, keepalive and idle-close behavior are not documented. |
+| Connection persistence | OBSERVED / UNCONFIRMED generally | One supplied TCP session continued across an application idle gap longer than the old archive threshold; the general reuse, keepalive and idle-close behavior is not documented. |
 | Full-duplex protocol semantics | UNCONFIRMED | A response path is documented, but unsolicited responses and simultaneous application traffic have not been established. |
 | Half-close behavior | UNCONFIRMED | No official or captured FIN/RST behavior is available. |
 | Timeouts and retries | UNCONFIRMED | Connect, response, idle, retry and duplicate-suppression rules are unavailable. |
@@ -62,13 +69,14 @@
 
 | Property | Status | Assessment |
 |---|---|---|
-| Application frame boundary | UNCONFIRMED | No delimiter, length field, sentinel, envelope or command boundary is accessible. |
-| STX/ETX or similar control bytes | UNCONFIRMED | No control-byte framing is documented in accessible RCH material. |
-| Checksum or CRC | UNCONFIRMED | No algorithm or field is accessible. |
-| Sequence or correlation identifier | UNCONFIRMED | No field is accessible. |
-| Character encoding | UNCONFIRMED | ASCII, ISO-8859 variants, Windows code pages and UTF encodings remain hypotheses. |
+| Application frame boundary | CONFIRMED on supplied corpus | The layout in RCH_PROTOCOL_ANALYSIS.md uses STX, AA, LLL, class, DATA, sequence, BCC and ETX; `LLL` is the three-digit `DATA` byte length and total frame size is `LLL + 11`. Official field names are unavailable. |
+| STX/ETX control bytes | CONFIRMED on supplied corpus | `0x02` and `0x03` delimit all 77 complete frames. This is observed, not anonymously documented by RCH. |
+| Checksum | CONFIRMED on supplied corpus | Two hexadecimal BCC characters equal XOR of bytes from STX through the sequence byte for 77/77 frames. |
+| Sequence or correlation identifier | CONFIRMED position / INFERRED meaning | A one-byte field occurs before BCC. Its official name and general correlation semantics remain UNKNOWN. |
+| Character encoding | CONFIRMED printable subset / UNKNOWN generally | Observed business payload is printable in a lossless one-byte view. Latin-1 diagnostic mapping is not an encoding declaration. |
 | Binary payload support | UNCONFIRMED | The PaDES-titled chapter does not reveal whether any bytes are transferred on this service, or in binary, encoded, or another form. |
-| Network read boundary equals frame | INFERRED | This is false for stream-oriented transports and must never be assumed; the actual transport remains to be observed. |
+| XML/Base64 in supplied cases | CONFIRMED absent | Neither supplied document stream contains XML, escaped XML, hexadecimal XML or Base64. This does not exclude other command families. |
+| Network read boundary equals frame | INFERRED required parser rule / synthetically tested | Private receive observations often aligned with complete frames while ACK and framed responses were separate reads; TCP offers no framing guarantee. Whole/1-byte/7-byte/random synthetic segmentation produces identical end-to-end results. |
 
 [INFERRED] A receive-call chunk must be archived with byte offsets and timing but must not be labeled an RCH frame.
 
@@ -77,14 +85,14 @@
 | Property | Status | Assessment |
 |---|---|---|
 | Command can produce a response | DOCUMENTED | The current XTools manual exposes command input and response output. |
-| Response format | UNCONFIRMED | Status fields, terminators, lengths, encoding and correlation are inaccessible. |
-| ACK/NAK bytes | UNCONFIRMED | No value or placement is documented. The proxy must not synthesize ACK, NAK, OK or error responses. |
+| Response format | CONFIRMED framing / UNKNOWN semantics | Printer responses use the same capture-confirmed frame shape. Payload status/error meanings remain inaccessible. |
+| ACK/NAK bytes | CONFIRMED events / UNKNOWN semantics | 39 standalone `0x06` ACK events and no standalone `0x15` NAK occur in the corpus. ACK scope is unknown; the proxy must not synthesize ACK, NAK, OK or errors. |
 | Intermediate and final status | UNCONFIRMED | No accessible flow definition distinguishes them. |
 | Paper-out response | UNCONFIRMED | A dedicated official chapter exists, but its body is authentication-gated. |
 | Error dictionary | UNCONFIRMED | A dedicated official list exists, but Print! F codes and recovery rules are unavailable. |
-| Document start | UNCONFIRMED | No opening command, envelope or state transition is established. |
-| Document end | UNCONFIRMED | No close/payment/final-response boundary is established. |
-| Multiple documents in one connection | UNCONFIRMED | No captured session exists. |
+| Document start | INFERRED | Commercial and management opening patterns correlate with the supplied paper outputs; they are not official command definitions. |
+| Document end | INFERRED | Candidate close patterns are repeatable within the supplied byte order. Fiscal completion remains UNKNOWN. |
+| Multiple documents in one connection | UNCONFIRMED | Captured sessions exist, but none contains two complete physical documents. The parser nevertheless supports repeated candidate lifecycles. |
 | Idle timeout as a job boundary | INFERRED | It may be used only as an explicitly marked fallback and may not establish fiscal completion. |
 | Cut command as a job boundary | UNCONFIRMED | No Print! F cut command or relationship to fiscal completion is established. |
 
@@ -100,7 +108,11 @@
 
 [INFERRED] XTools V11 export and Print! F Corrispettivi XML v.7 are distinct contexts unless authenticated RCH documentation explicitly maps them.
 
-[INFERRED] A copied byte range may be labeled a generic XML candidate and, if accepted by a hardened parser, generically well-formed. It must not be labeled RCH XML7 and `xml7_confirmed` must remain false until XML-1 through XML-4 pass.
+[CONFIRMED] The supplied commercial and management streams are not XML. A
+copied byte range from a future or unrelated capture may still be labelled a
+generic XML candidate and, if accepted by a hardened parser, generically
+well-formed. It must not be labelled RCH XML7 and `xml7_confirmed` must remain
+false until XML-1 through XML-4 pass.
 
 [INFERRED] See RCH_XML7.md for the parser gate used by this project.
 
@@ -177,9 +189,9 @@
 
 ### FRAME-1 — framing
 
-- [UNCONFIRMED] Reassemble each direction independently before testing a frame hypothesis.
+- [CONFIRMED] The supplied directional copies were reassembled independently; one frame rule validates all 77 complete frames and is invariant under synthetic receive segmentation.
 - [INFERRED] Acceptance requires one rule to explain 100 percent of boundaries across captures with deliberately different network segmentation, at least three repetitions each of CASE-G1, CASE-C1 and CASE-G2, and all captured responses.
-- [INFERRED] Any checksum/length hypothesis must validate every captured frame; otherwise framing remains UNCONFIRMED.
+- [CONFIRMED] The decimal length and XOR-BCC rule validates every complete supplied frame; broader installed-device variants still require the repeated-case gate above.
 - [INFERRED] A receive-call boundary, packet boundary or idle gap alone cannot pass FRAME-1.
 
 ### FLOW-1 — request/response
@@ -232,8 +244,23 @@
 
 [DOCUMENTED] Ethernet connectivity, use of port 23, and an RCH command/response capability are established for Print! F. The accessible source does not identify the IP transport.
 
-[OBSERVED] No direct RCH packet capture, device firmware readout, or authenticated manual body is present in this workspace as of 2026-08-11.
+[CONFIRMED] Private raw request/response artifacts and receipt photographs are
+available for the two supplied cases. They are proxy-generated stream copies,
+not a direct/proxy PCAP comparison, and are intentionally excluded from Git.
 
-[UNCONFIRMED] TCP, UDP, raw mode, Telnet, framing, encoding, XML7 envelope, job boundaries, status bytes, error codes and PaDES transfer remain unresolved.
+[OBSERVED] No direct RCH PCAP, device firmware readout, or authenticated manual
+body is present in this workspace as of 2026-08-11.
 
-[INFERRED] The release provides a fixture-tested TCP relay design and passive local capture only. Installed-device transport compatibility and application-byte transparency remain `UNCONFIRMED` until NET-2 and C-4/PROXY-1 pass; protocol-aware success, authoritative fiscal classification, and signed-document extraction remain gated.
+[CONFIRMED] The supplied run uses TCP-session capture metadata and the observed
+frame/length/BCC rules validate all complete frames. XML and Base64 are absent
+from both document cases. These facts are capture-specific.
+
+[UNKNOWN] TCP as the official general transport, raw mode, Telnet, general
+encoding, XML7 envelope for other workflows, official command/job meanings,
+status/error semantics and PaDES transfer remain unresolved.
+
+[INFERRED] The release provides a fixture-tested TCP relay,
+capture-confirmed framing and conservative receipt reconstruction for the
+observed command families. Installed-device byte transparency remains gated by
+NET-2 and C-4/PROXY-1; fiscal success, authoritative command semantics and
+signed-document extraction remain gated.
