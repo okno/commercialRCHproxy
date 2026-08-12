@@ -2,7 +2,7 @@
 
 ## Supported release
 
-The pre-production `0.1.x` line receives security fixes. It is not certified fiscal software and has not completed device acceptance.
+The pre-production `0.2.x` line receives security fixes. It is not certified fiscal software and has not completed device acceptance.
 
 ## Reporting
 

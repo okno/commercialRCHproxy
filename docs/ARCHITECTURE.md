@@ -21,7 +21,11 @@ Gestionale <--implemented TCP-- pump RCH->C +<--implemented TCP-- RCH Print! F
                          RAW/TXT/PDF/JSON
 ```
 
-The two pumps are independent coroutines. Relay writes and bounded capture bookkeeping are kept separate from semantic analysis; captured data is never transformed and fed back into the relay path. Generic-XML inspection, hashing, disk publication, and rendering run outside the forwarding pump.
+The two pumps are independent coroutines. Each opaque `writer.write()` is
+queued before bounded capture/boundary-hint bookkeeping; captured data is
+never transformed and fed back into the relay path. Generic-XML inspection,
+semantic reconstruction, hashing, disk publication, and rendering run outside
+the forwarding pump.
 
 Implementation receive-call boundaries are never treated as RCH frames or protocol evidence.
 
@@ -46,51 +50,97 @@ An active capture records local observations:
 
 - client-side bytes received by the relay, up to `MAX_PAYLOAD_BYTES`;
 - configured-upstream-side bytes received by the relay, within the same bound;
-- timestamp, direction, and per-direction stream offset for each copied chunk.
+- wall-clock/monotonic timestamp, direction, ordered event number, job offset
+  and session-relative directional offset for each copied chunk.
+
+Receive-event metadata has a hard count ceiling. Crossing it leaves the
+directional RAW intact, marks `timeline_complete=false`, and records why the
+JSONL timeline is partial.
 
 A completed local writer drain is not proof that the peer application accepted, processed, printed, or persisted the bytes. End-to-end byte delivery remains `UNCONFIRMED` until PCAP comparison and application/physical acceptance pass C-4.
 
-No protocol-native document boundary is known. The current fallback:
+No authenticated protocol-native document boundary is known. Capture-confirmed
+envelopes and inferred lifecycle hints now prevent the known one-second split:
 
-- waits up to `RESPONSE_TIMEOUT_SEC` for the first response after request activity;
-- after response activity, finalizes on `JOB_IDLE_TIMEOUT_MS` of bidirectional silence;
+- keeps an incremental directional envelope tracker across receive chunks;
+- tracks pending framed responses by the sequence relationship observed in the
+  private corpus; standalone ACK does not complete that queue;
+- tracks a lightweight commercial/management candidate and any partial frame;
+- accepts only BCC-valid observed `00/z` request and `01/N` response profiles
+  for those non-authoritative hints;
+- bounds hint queues/history and skips hint parsing for oversized read chunks;
+- uses the short `JOB_IDLE_TIMEOUT_MS` only when none of those states is pending;
+- otherwise waits `RESPONSE_TIMEOUT_SEC + JOB_IDLE_TIMEOUT_MS`;
 - finalizes any remaining copy at connection close.
 
-Every manifest labels this as `fallback_inactivity` or `fallback_connection_close` with confidence at or below `0.20`. It is not suitable for fiscal conclusions. Persistent connections are supported and can yield multiple fallback jobs, but authenticated framing/job rules must replace the fallback after PCAP validation.
+Normal fallback manifests remain `fallback_inactivity` or
+`fallback_connection_close` with confidence at or below `0.20`. A response
+that arrives only after an already-published timeout segment is preserved in
+an `orphan_late_response` segment with confidence `0.10`. These are storage
+boundaries, not fiscal conclusions. Tracker failure is fail-open for opaque
+forwarding and capture.
 
 ## Passive protocol intelligence
 
 The passive analyzer has four independent results:
 
 - implementation transport: TCP stream, with detected installed-device transport `null` and evidence `UNCONFIRMED` pending NET-2;
-- framing: `confirmed=false`;
+- framing: capture-confirmed delimiter, decimal data length, sequence position
+  and XOR BCC, with exact frame/issue offsets;
+- standalone `0x06` ACK events separate from framed printer responses;
 - secure generic-XML candidate copy: candidate offsets, generic well-formedness, literal root QName/local name and leaf paths, with `xml7_confirmed=false`;
-- document classification: authoritative `document_type=null`; heuristics can emit only low-confidence `candidate_printed_class` and `candidate_observed_variant`.
+- evidence-labelled receipt reconstruction: `document_type` is an `INFERRED`
+  command-sequence classification (`commerciale` or `gestionale`) only when a
+  correlated observed lifecycle is present; unknown streams remain null.
 
-The response analyzer always returns both application success and protocol status as `null` in `0.1.0`. Error and command dictionaries are intentionally empty.
+The response analyzer still returns application success, printer status and
+protocol/error meaning as null. The official command/error dictionaries remain
+empty; receipt roles are isolated reverse-engineering rules, not official RCH
+definitions.
+
+Live semantic reconstruction operates on each archived fallback job. The
+session-scoped recorder hints prevent the observed 1.37-second split, while
+the offline inspector groups immutable jobs by exact `session_id` when a
+document still spans an extended fallback boundary.
 
 ## Intermediate document model
 
 ```text
-captured request copy
+directional request/response copies
         |
-        +--> technical byte/candidate-XML inspection
+        +--> incremental framing + ACK events + issues
         |
-        +--> authoritative RCH field mapping (not available in 0.1.0)
-                         |
-                    DocumentModel
-                     /       \
-               clean         PDF_PROXY_RENDERED
-          empty/unavailable   empty/unavailable
+        +--> inferred command/document state (request only)
+        |              |
+        |         DocumentModel(s)
+        |          /      |       \
+        |   receipt.txt parsed.json PDF_PROXY_RENDERED
+        |
+        `--> response events/metadata (never receipt body)
 ```
 
-`DocumentModel` supports trace fields for byte offset, frame number, and XML path. Frame numbers remain `null` until framing is proven. Because no authoritative RCH-to-field mapping is available, production PULITO/PDF human content is intentionally empty/unavailable in 0.1.0. Photo-derived models are test fixtures for layout only. No absent tax, amount, document number, date, or fiscal field is invented.
+`DocumentModel` supports trace fields for byte offset, frame number and XML
+path. Recognized observed command families populate only literal fields present
+in request `DATA`; every semantic role is `INFERRED`. Unsupported streams stay
+empty, and absent tax, payment, merchant, date, counter or fiscal fields are
+never created. Photos validate captured values but never supply model data.
 
 ## Storage
 
-Artifacts are written to a random same-directory temporary name, flushed with `fsync`, chmodded, and atomically replaced. The containing directory is also flushed where supported. Application-controlled directory levels reject symlinks. JSON is written last so its presence means sidecar publication was attempted and its `render_errors` list is authoritative.
+Artifacts are written to a random same-directory temporary name, flushed with
+`fsync`, chmodded, and atomically replaced. The containing directory is also
+flushed where supported. Application-controlled directory levels reject
+symlinks. Directional RAW and the JSONL receive timeline are attempted before
+semantic parsing; parsed JSON, human text and PDF are derived sidecars. The
+manifest JSON is written last so its presence means sidecar publication was
+attempted and its `render_errors` list is authoritative.
 
-`MAX_PAYLOAD_BYTES` prevents unbounded capture memory. Forwarding continues if the cap is crossed, but `raw_complete=false`, `status=capture_incomplete`, and the error are recorded. A partial RAW must never be presented as byte-complete evidence.
+`MAX_PAYLOAD_BYTES` prevents unbounded capture memory. Forwarding continues if
+the cap is crossed, but `raw_complete=false`, `status=capture_incomplete`, and
+the error are recorded. A separate capture-event ceiling bounds timeline
+objects. Semantic analysis has lower byte/event/message/issue/document caps so
+hostile input falls back to partial diagnostics without changing RAW. A
+partial RAW must never be presented as byte-complete evidence.
 
 ## Failure isolation
 
@@ -106,7 +156,8 @@ Artifacts are written to a random same-directory temporary name, flushed with `f
 - ESC/POS parsing or rendering.
 - Synthetic status/test-print commands.
 - Store-forward, retry, or replay.
-- Protocol-aware frame/ACK/error decoder without evidence.
+- Official response/error or fiscal-success decoder; only observed framing and
+  standalone ACK presence are decoded.
 - Automatic/service-runtime interface or VIP changes. The optional operator-invoked secondary-address helper is a separate root oneshot service; the proxy process never receives its capabilities.
 - Embedded PCAP capture.
 - Database or remote upload.

@@ -61,15 +61,15 @@
 | Bidirectional byte preservation | INFERRED | Fixture-tested design target; installed-device application-byte equality is `UNCONFIRMED` until C-4 |
 | TCP-specific behavior | UNCONFIRMED | Do not claim compatibility until NET-2 observes TCP |
 | Telnet behavior | UNCONFIRMED | Do not negotiate or strip Telnet bytes without documentation/observation |
-| Application framing | UNCONFIRMED | Passive only |
-| Command parser | UNCONFIRMED | No authoritative syntax available |
-| Response parser | UNCONFIRMED | No authoritative response layout available |
+| Application framing | CONFIRMED on supplied corpus | 77/77 observed frames validate delimiter, length and XOR BCC; broader variants remain unknown |
+| Command parser | INFERRED | Correlated commercial/management roles only; no authoritative syntax available |
+| Response parser | CONFIRMED framing / UNKNOWN semantics | ACK and frames are separated; status/error meanings are not mapped |
 | Error dictionary | UNCONFIRMED | No Print! F error codes available anonymously |
 | XML7 parser | UNCONFIRMED | Generic-XML candidate discovery only; no XML7 root/schema/meaning is asserted |
-| Fiscal document classifier | UNCONFIRMED | `document_type` remains `null`; heuristics may emit candidate labels only |
-| Job boundary detector | UNCONFIRMED | Idle fallback may not assert completion |
+| Fiscal document classifier | INFERRED | Recognized observed command lifecycles emit `commerciale`/`gestionale`; unknown streams remain null |
+| Job boundary detector | INFERRED | Pending frame/response/document hints prevent the confirmed one-second split; timeout remains fallback only |
 | PaDES original extractor | UNCONFIRMED | Not implemented as a supported capability; requires PADES-1 before any promotion |
-| Proxy-rendered PDF | INFERRED | Labeled sidecar only; production human body remains empty/unavailable until authoritative mapping and physical comparison pass |
+| Proxy-rendered PDF | INFERRED | Labelled sidecar renders captured fields only; physical fidelity and fiscal status remain unknown |
 
 ## Firmware matrix
 

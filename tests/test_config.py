@@ -49,6 +49,18 @@ def test_forensic_manifest_cannot_be_disabled(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("key", ["SAVE_RAW", "SAVE_TECHNICAL_TXT"])
+def test_directional_raw_and_timeline_cannot_be_disabled(tmp_path: Path, key: str) -> None:
+    with pytest.raises(ConfigError, match=f"{key} must remain true"):
+        Config.from_mapping(
+            {
+                "OUTPUT_DIR": str((tmp_path / "jobs").resolve()),
+                "LOG_DIR": str((tmp_path / "logs").resolve()),
+                key: "false",
+            }
+        )
+
+
 def test_duplicate_file_key_rejected(tmp_path: Path) -> None:
     path = tmp_path / "proxy.conf"
     path.write_text("LISTEN_PORT=23\nLISTEN_PORT=24\n", encoding="utf-8")

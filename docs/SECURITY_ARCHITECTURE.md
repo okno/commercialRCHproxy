@@ -42,4 +42,4 @@ systemd-analyze verify /etc/systemd/system/commercialrchproxy.service
 
 ## Retention and backups
 
-`RETENTION_DAYS=0` disables deletion. Version 0.1.0 does not run automated pruning. Backups can contain sensitive commercial/personal data; protect, encrypt, access-control, test, and dispose of them under applicable policy.
+`RETENTION_DAYS=0` disables deletion. Version 0.2.0 does not run automated pruning. Backups can contain sensitive commercial/personal data; protect, encrypt, access-control, test, and dispose of them under applicable policy.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "commercialRCHproxy"
-version = "0.1.0"
+version = "0.2.0"
 description = "Evidence-gated full-duplex relay and forensic capture candidate for RCH Print! F"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -31,6 +31,7 @@ dev = [
 
 [project.scripts]
 commercialrchproxy = "commercialrchproxy.main:cli"
+commercialrchproxy-inspect = "commercialrchproxy.tools.inspect_stream:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]

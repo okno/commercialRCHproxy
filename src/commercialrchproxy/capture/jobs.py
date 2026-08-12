@@ -5,9 +5,11 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from time import monotonic_ns
 
 CLIENT_TO_RCH = "CLIENT -> RCH"
 RCH_TO_CLIENT = "RCH -> CLIENT"
+_MAX_CAPTURE_EVENTS = 65536
 
 
 def utc_now() -> datetime:
@@ -16,9 +18,12 @@ def utc_now() -> datetime:
 
 @dataclass(slots=True)
 class CapturedChunk:
+    sequence: int
     direction: str
     timestamp: str
+    monotonic_ns: int
     offset: int
+    session_offset: int
     data: bytes
     local_write_drain_completed: bool | None = None
 
@@ -41,6 +46,7 @@ class CapturedJob:
     printer_ip: str
     printer_port: int
     max_payload_bytes: int
+    max_capture_events: int = _MAX_CAPTURE_EVENTS
     job_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     started_at: datetime = field(default_factory=utc_now)
     ended_at: datetime | None = None
@@ -53,13 +59,26 @@ class CapturedJob:
     bytes_local_write_drain_to_client: int = 0
     capture_complete: bool = True
     capture_error: str | None = None
+    capture_event_count_observed: int = 0
+    timeline_complete: bool = True
+    timeline_error: str | None = None
     boundary_source: str = "fallback_inactivity"
     boundary_confidence: float = 0.20
     transport_status: str = "captured_delivery_unconfirmed"
 
-    def append(self, direction: str, data: bytes) -> int | None:
+    def append(
+        self,
+        direction: str,
+        data: bytes,
+        *,
+        sequence: int | None = None,
+        session_offset: int | None = None,
+        timestamp: str | None = None,
+        observed_monotonic_ns: int | None = None,
+    ) -> int | None:
         if not data:
             return None
+        self.capture_event_count_observed += 1
         if direction == CLIENT_TO_RCH:
             self.bytes_captured_from_client += len(data)
         else:
@@ -70,15 +89,26 @@ class CapturedJob:
         stored = data[: max(0, remaining)]
         if stored:
             target.extend(stored)
-            self.chunks.append(
-                CapturedChunk(
-                    direction=direction,
-                    timestamp=utc_now().isoformat(),
-                    offset=offset,
-                    data=bytes(stored),
+            if len(self.chunks) < self.max_capture_events:
+                self.chunks.append(
+                    CapturedChunk(
+                        sequence=len(self.chunks) + 1 if sequence is None else sequence,
+                        direction=direction,
+                        timestamp=timestamp or utc_now().isoformat(),
+                        monotonic_ns=monotonic_ns() if observed_monotonic_ns is None else observed_monotonic_ns,
+                        offset=offset,
+                        session_offset=offset if session_offset is None else session_offset,
+                        data=bytes(stored),
+                    )
                 )
-            )
-            chunk_index: int | None = len(self.chunks) - 1
+                chunk_index: int | None = len(self.chunks) - 1
+            else:
+                chunk_index = None
+                self.timeline_complete = False
+                self.timeline_error = (
+                    f"capture event limit {self.max_capture_events} exceeded; "
+                    "directional RAW remains authoritative but the receive timeline is partial"
+                )
         else:
             chunk_index = None
         if len(stored) != len(data):

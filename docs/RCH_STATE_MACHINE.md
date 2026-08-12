@@ -51,12 +51,16 @@
 
 | State | Status | Meaning |
 |---|---|---|
-| OPAQUE_SESSION | INFERRED | Application bytes exist but no framing rule is confirmed |
+| OPAQUE_SESSION | INFERRED | Application bytes exist but do not match the capture-confirmed profile |
 | CANDIDATE_REQUEST_BYTES | OBSERVED | One or more literal client-to-printer byte ranges were captured |
 | CANDIDATE_RESPONSE_BYTES | OBSERVED | One or more literal printer-to-client byte ranges were captured |
+| FRAMED_STREAM | CONFIRMED | One or more complete frames satisfy observed delimiters, length and XOR BCC |
+| STANDALONE_ACK | CONFIRMED | Byte `0x06` occurred outside a frame; its application meaning remains unknown |
+| DOCUMENT_CANDIDATE_OPEN | INFERRED | A correlated opening command pattern was observed; this is not an official fiscal state |
+| DOCUMENT_CANDIDATE_COMPLETE | INFERRED | The corresponding inferred close pattern was captured; printer/fiscal result remains unknown |
 | GENERIC_XML_CANDIDATE | INFERRED | A copied byte range was selected heuristically for generic-XML inspection; this does not identify XML7 |
 | ANALYSIS_PENDING | INFERRED | Passive worker has not completed |
-| ANALYSIS_BEST_EFFORT | INFERRED | Technical candidate output was produced without protocol authority; production PULITO/PDF human content remains unavailable |
+| ANALYSIS_BEST_EFFORT | INFERRED | Technical and captured-field human output was produced without claiming official command authority |
 | ANALYSIS_UNCONFIRMED | INFERRED | No documented/observed semantic boundary was found |
 
 [INFERRED] A socket read is an observation chunk, not an application frame.
@@ -64,6 +68,28 @@
 [INFERRED] Candidate request and response bytes may interleave in time and must retain independent direction-specific offsets.
 
 [INFERRED] Passive-analysis failure must not alter forwarding state.
+
+## Inferred document-assembly states
+
+`DocumentAssemblyState` is a reconstruction state machine, not an official RCH
+or fiscal state machine. Frame boundaries and literal command bytes are
+`CONFIRMED`; every transition meaning below is `INFERRED`.
+
+| State | Entry candidate | Exit candidate | Output meaning |
+|---|---|---|---|
+| `idle` | No active recognized lifecycle | `=K` after an optional `<</?s`, or first `=o` | No document candidate is open |
+| `commercial_body` | `=K` | total-like `=T...` | Item and free-text candidates accumulate |
+| `commercial_payment` | total-like `=T...` | following commercial control sequence | Total and generic payment-amount candidate captured; method remains null |
+| `commercial_postlude` | `<</?s` while a commercial payment candidate is active | exact `<</?7` | Auxiliary/control tail is retained without becoming receipt body |
+| `management_body` | first `=o` | paired `=o` | Printable management lines accumulate |
+| `complete` | inferred commercial or management close | terminal for that candidate | Request lifecycle captured; fiscal/printer result remains unknown |
+| `incomplete` | EOF/fallback with an active candidate | terminal for that candidate | Partial fields and raw evidence retained with an issue |
+
+The parser records every transition with source frame ID/offset in
+`document_state_transitions` and the final state in document metadata. It then
+returns to `idle`, allowing another document in the same application stream.
+Display-only exchanges and unknown commands never open a document by
+themselves.
 
 ## Fiscal/job states not yet permitted
 
@@ -87,15 +113,16 @@
 
 | Question | Status |
 |---|---|
-| Is the actual port-23 transport TCP? | UNCONFIRMED |
+| Is the supplied proxy run represented as TCP sessions? | CONFIRMED by capture metadata |
+| Is TCP an official/general Print! F transport property? | UNCONFIRMED |
 | Is the connection raw or Telnet-aware? | UNCONFIRMED |
 | Does the management system keep one connection open? | UNCONFIRMED |
 | Can several documents share one connection? | UNCONFIRMED |
 | Can Print! F send unsolicited status? | UNCONFIRMED |
 | Can responses arrive after client input closes? | UNCONFIRMED |
 | Does a final response close the connection? | UNCONFIRMED |
-| Does idle time separate documents? | UNCONFIRMED |
-| Does XML delimit a complete job? | UNCONFIRMED |
+| Does idle time separate documents? | CONFIRMED false in the supplied commercial case; general timing remains UNCONFIRMED |
+| Does XML delimit either supplied job? | CONFIRMED no; other workflows remain UNCONFIRMED |
 
 ## State-machine acceptance gates
 
@@ -140,8 +167,10 @@
 | bytes_arrived_at_printer / bytes_arrived_at_client | UNCONFIRMED end-to-end delivery; `null` until C-4 evidence supports it |
 | timestamp_start / timestamp_end | OBSERVED local capture-segment timestamps; not official RCH session/job markers |
 | capture_error | OBSERVED local capture error text when present; otherwise `null` |
-| request_frames/response_frames | UNCONFIRMED; null until FRAME-1 |
-| document_type | UNCONFIRMED; `null` until authoritative classifier gate |
+| request_frames/response_frames | CONFIRMED structural counts when observed framing succeeds; null only after parser failure |
+| response_ack_count | CONFIRMED count of standalone `0x06` events; not success |
+| document_type | INFERRED `commerciale`/`gestionale` for a recognized observed lifecycle; otherwise `null` |
+| documents | INFERRED candidate summaries with completeness and CONFIRMED source frame ranges |
 | candidate_printed_class / candidate_observed_variant | INFERRED heuristic labels only; nullable and non-authoritative |
 | protocol_status | UNCONFIRMED; `null` |
 | printer_status | UNCONFIRMED; `null` |
@@ -150,8 +179,14 @@
 
 ## Current verdict
 
-[OBSERVED] No direct or proxied Print! F PCAP exists in this workspace.
+[CONFIRMED] Private proxy-generated directional stream copies and correlated
+photos exist for the two supplied cases; no direct/proxy PCAP comparison
+exists.
 
 [UNCONFIRMED] No official application state diagram is anonymously accessible.
 
-[INFERRED] The implemented state machine is transport-scoped and semantically opaque, and it passes opaque TCP fixture tests. Installed-device transport compatibility, end-to-end byte preservation, and production safety remain `UNCONFIRMED` until NET-2 and C-4 pass.
+[INFERRED] The implementation combines transport states, capture-confirmed
+framing and a separate candidate document state machine. Candidate completion
+must never be promoted to the prohibited fiscal states above. Installed-device
+byte transparency and production safety remain `UNCONFIRMED` until NET-2 and
+C-4 pass.

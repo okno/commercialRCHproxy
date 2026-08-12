@@ -7,3 +7,4 @@
 *.toml text eol=lf
 *.md text eol=lf
 *.txt text eol=lf
+/tests/fixtures/rch_synthetic_management.expected.txt whitespace=-blank-at-eof

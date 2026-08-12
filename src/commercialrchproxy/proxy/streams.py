@@ -62,6 +62,10 @@ async def pump(
                     return PumpResult(direction, total, "half_close_error", half_close_error)
                 return PumpResult(direction, total, "eof")
 
+            # Queue opaque bytes toward the peer before doing any capture or
+            # boundary-hint work.  The parser only sees a copy and can fail
+            # without changing the forwarded stream.
+            writer.write(data)
             token = None
             try:
                 token = await recorder.record(direction, data)
@@ -75,7 +79,6 @@ async def pump(
                 )
             local_drain_completed = False
             try:
-                writer.write(data)
                 await asyncio.wait_for(writer.drain(), timeout=config.connection_timeout_sec)
                 local_drain_completed = True
             finally:

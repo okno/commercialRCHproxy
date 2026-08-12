@@ -14,7 +14,7 @@ Current events include:
 - `capture_error`, `capture_segment_archived`, `capture_segment_archive_failed`;
 - future `integrity_error`, `disk_low`, and verified `rch_error` events.
 
-The `jobs_completed`/`jobs_failed` metric names are retained as the operational API requested for monitoring. In 0.1.0 they count fallback-bounded capture segments archived or failed, not RCH-confirmed fiscal jobs.
+The `jobs_completed`/`jobs_failed` metric names are retained as the operational API requested for monitoring. In 0.2.0 they count archived or failed capture segments, including inferred-boundary and fallback cases, not RCH-confirmed fiscal jobs.
 
 Fields are sanitized to one line and bounded. Payload is not logged unless `DEBUG=true`, `DEBUG_HEXDUMP=true`, and `LOG_PAYLOAD=true`.
 

@@ -150,7 +150,7 @@ class Config:
 
         hash_algorithm = value("HASH_ALGORITHM", "sha256").lower()
         if hash_algorithm != "sha256":
-            raise ConfigError("HASH_ALGORITHM must be sha256 in version 0.1.x")
+            raise ConfigError("HASH_ALGORITHM must be sha256 in this release")
         log_level = value("LOG_LEVEL", "INFO").upper()
         if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ConfigError(f"Unsupported LOG_LEVEL: {log_level}")
@@ -209,7 +209,11 @@ class Config:
             if path_value == Path(path_value.anchor):
                 raise ConfigError(f"{name} must not be a filesystem root")
         if not result.save_json:
-            raise ConfigError("SAVE_JSON must remain true in version 0.1.x because the forensic manifest is mandatory")
+            raise ConfigError("SAVE_JSON must remain true because the forensic manifest is mandatory")
+        if not result.save_raw:
+            raise ConfigError("SAVE_RAW must remain true because immutable directional evidence is mandatory")
+        if not result.save_technical_txt:
+            raise ConfigError("SAVE_TECHNICAL_TXT must remain true because the receive timeline is mandatory")
         return result
 
     def redacted_dict(self) -> dict[str, object]:

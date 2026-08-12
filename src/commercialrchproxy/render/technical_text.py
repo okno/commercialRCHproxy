@@ -32,7 +32,7 @@ def render_technical_text(chunks: Iterable[ChunkLike], analysis: ProtocolAnalysi
         f"implementation_transport={analysis.implementation_transport}",
         "transport_detected=unknown",
         f"transport_evidence={analysis.transport_evidence}",
-        "framing_confirmed=false",
+        f"framing_confirmed={str(analysis.framing_confirmed).lower()}",
         "note=receive chunks below are not asserted to be RCH frames or delivered bytes",
         "",
     ]
@@ -80,7 +80,7 @@ def render_technical_text(chunks: Iterable[ChunkLike], analysis: ProtocolAnalysi
             f"parser_status={analysis.parser_status}",
             "telnet_negotiation_confirmed=false",
             f"telnet_iac_candidate_bytes_observed={str(analysis.telnet_iac_candidate_bytes_observed).lower()}",
-            "document_type=unknown",
+            f"document_type={classification.document_type or 'unknown'}",
             f"candidate_printed_class={classification.candidate_printed_class or 'unknown'}",
             f"candidate_observed_variant={classification.candidate_observed_variant or 'unknown'}",
             f"candidate_classification_source={classification.source or 'unknown'}",
@@ -91,6 +91,45 @@ def render_technical_text(chunks: Iterable[ChunkLike], analysis: ProtocolAnalysi
             f"xml7_confirmed={str(xml.xml7_confirmed).lower()}",
         )
     )
+    protocol = analysis.protocol
+    if protocol is not None:
+        output.extend(
+            (
+                "",
+                "[CAPTURE-CONFIRMED FRAMING]",
+                f"request_frames={len(protocol.request_framing.frames)}",
+                f"response_frames={len(protocol.response_framing.frames)}",
+                f"response_ack_count={len(protocol.response_framing.acks)}",
+                f"framing_issue_count={len(protocol.request_framing.issues) + len(protocol.response_framing.issues)}",
+                f"document_count={len(protocol.documents)}",
+                "frame_layout=STX|AA|LLL|class|DATA[LLL]|seq|BCC|ETX",
+                "bcc_rule=XOR(STX..seq); CONFIRMED on supplied captures",
+                "command_semantics=INFERRED",
+            )
+        )
+        for message in protocol.messages:
+            output.extend(
+                (
+                    "",
+                    "[APPLICATION STREAM EVENT]",
+                    f"message_id={message.message_id}",
+                    f"direction={message.direction}",
+                    f"kind={message.kind}",
+                    f"role={message.role}",
+                    f"role_evidence={message.evidence}",
+                    f"stream_offset={message.stream_offset}",
+                    f"length={message.end_offset - message.stream_offset}",
+                )
+            )
+            if message.kind == "frame":
+                output.extend(
+                    (
+                        f"frame_id={message.frame_id}",
+                        f"class={message.frame_class}",
+                        f"data_hex={message.data.hex()}",
+                        f"data_text_latin1={message.data_text}",
+                    )
+                )
     if xml.error:
         output.append(f"xml_error={xml.error}")
     if xml.pretty_reserialized:

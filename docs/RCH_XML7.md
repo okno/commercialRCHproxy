@@ -111,7 +111,11 @@
 | tax/payment meaning | UNCONFIRMED | Official XML v.7 layout |
 | protocol/job status | UNCONFIRMED | Official flow/response definition |
 
-[INFERRED] The technical transcript may display bounded literal candidate text. Production PULITO/PDF human content remains empty/unavailable until authoritative mapping passes; renderers must not manufacture fiscal semantics.
+[INFERRED] The technical transcript may display bounded literal candidate text.
+A generic XML candidate alone does not populate human output. Separately, the
+capture-confirmed non-XML command families described in RECEIPT_PARSER.md may
+render only their stream-present fields under inferred semantics; renderers
+must not manufacture fiscal meaning.
 
 ## XML acceptance gates
 

@@ -18,7 +18,6 @@
 |---|---|---|---|---|---|---|
 | RCH-XT-2026 | DOCUMENTED | [RCH XTools User Manual / Quick Guide](https://support.rch.it/download/28926/) | v4.0.0; DE0054A0008; 07/2026 | Public PDF | Print! F minimum firmware for XTools; Ethernet/serial selection; port 23; RCH protocol command/response UI; compatibility table; V11 XML export context | XTools compatibility is not the Print! F wire-protocol specification |
 | RCH-PF-BROCHURE-2018 | DOCUMENTED | [Print! F brochure](https://www.rch.it/wp-content/uploads/2021/07/PRINT-F_2018_02-vr00.pdf) | 2018-02 rev.00 | Public PDF | Interfaces, named communication families, printer width/resolution/character capacity | Old product brochure; no framing, transport, XML7 or firmware applicability |
-| RCH-XT-NI-2024-03 | DOCUMENTED | [RCH XTools 1.6.0 release note](https://download.rch.it/support/NI-FW/RCH_Nota_Informativa_Software-Firmware_Nr03-2024_XTools.pdf) | Note 3/2024; 2024-02-20 | Public PDF | XTools 1.6.0 supported-device list includes Print! F; Ethernet/serial management and general functions | Superseded for current compatibility by RCH-XT-2026 |
 | RCH-PF-MANUAL | DOCUMENTED | [Print! F protocol manual](https://support.rch.it/docs/print-f/manuale-protocollo/) | Web page updated 2023-12-13; actual manual revision UNCONFIRMED | Authentication required | Official chapter hierarchy and existence of subject areas | Anonymous body contains only a login message |
 | RCH-PF-REV | DOCUMENTED | [Revision register](https://support.rch.it/docs/print-f/manuale-protocollo/registro-revisioni/) | Web page updated 2023-12-14; revision content UNCONFIRMED | Authentication required | Existence of a Print! F protocol revision register | No revision row is anonymously accessible |
 | RCH-PF-STRUCT | DOCUMENTED | [Protocol structure](https://support.rch.it/docs/print-f/manuale-protocollo/struttura-del-protocollo/) | Web page updated 2023-12-13 | Authentication required | Existence of an official structure chapter | No framing field is accessible |
@@ -75,13 +74,13 @@
 |---|---|---|---|
 | Port default 23 | DOCUMENTED | RCH-XT-2026 §4.1.1 | Configuration defaults and RCH_PROTOCOL_ASSESSMENT.md |
 | Transport classification | UNCONFIRMED | NET-1 and NET-2 | proxy/session diagnostics; not an RCH parser rule |
-| Framing | UNCONFIRMED | RCH-PF-STRUCT plus FRAME-1 | src/commercialrchproxy/rch/framing.py |
+| Framing | CONFIRMED on supplied corpus / not officially documented | RCH-PF-STRUCT plus FRAME-1 | src/commercialrchproxy/rch/framing.py validates observed delimiter, length and XOR BCC |
 | Command semantics | UNCONFIRMED | RCH-PF-CMDS plus DOC-1 | src/commercialrchproxy/rch/commands.py |
 | Response semantics | UNCONFIRMED | RCH-PF-FLOW plus FLOW-1 | src/commercialrchproxy/rch/responses.py |
 | Error mapping | UNCONFIRMED | RCH-PF-PAPER, RCH-PF-ERRORS and ERR-1 | src/commercialrchproxy/rch/errors.py |
 | XML v.7 parsing | UNCONFIRMED | RCH-PF-XML7 and XML-1 through XML-4 | src/commercialrchproxy/rch/xml7.py |
-| Job boundaries | UNCONFIRMED | RCH-PF-FLOW and JOB-1 | src/commercialrchproxy/capture/jobs.py |
-| Document classification | UNCONFIRMED | authenticated protocol identifiers plus real capture correlation | src/commercialrchproxy/rch/document_types.py emits candidate labels only; authoritative `document_type` remains `null` |
+| Job boundaries | INFERRED | RCH-PF-FLOW and JOB-1 | capture/recorder.py uses observed pending-state hints; timeout remains fallback |
+| Document classification | INFERRED | authenticated protocol identifiers still unavailable; private raw/photo correlation available | rch/receipt_parser.py emits evidence-labelled `commerciale`/`gestionale` only for observed command lifecycles |
 | PaDES extraction | UNCONFIRMED | RCH-PF-PADES chapter title plus PADES-1 | no supported capability; consider an isolated extractor only after installed applicability, transfer, and validation are established |
 | Printer layout baseline | DOCUMENTED | RCH-PF-BROCHURE-2018 | renderer configuration, subject to HW-1 |
 

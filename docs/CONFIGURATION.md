@@ -12,19 +12,19 @@ Production configuration is `/etc/commercialrchproxy/commercialrchproxy.conf`. T
 | `LOG_DIR` | `/var/log/commercialrchproxy` | Absolute structured-log directory |
 | `CONNECTION_TIMEOUT_SEC` | `30` | Upstream connect and write-drain operational bound |
 | `RESPONSE_TIMEOUT_SEC` | `10` | Tail-drain/first-response fallback bound; calibrate from PCAP |
-| `JOB_IDLE_TIMEOUT_MS` | `1000` | Low-confidence archive boundary after response silence |
-| `SAVE_RAW` | `true` | Save request and response RAW copies |
-| `SAVE_TECHNICAL_TXT` | `true` | Save directional technical transcript |
-| `SAVE_CLEAN_TXT` | `true` | Publish a PULITO sidecar; its production human content remains empty/unavailable until authoritative field mapping exists |
-| `SAVE_PDF` | `true` | Publish a labeled proxy-rendered PDF sidecar; its production body remains empty/unavailable until mapping and physical tests pass |
-| `SAVE_JSON` | `true` | Mandatory forensic manifest; `false` is rejected in `0.1.x` |
-| `HASH_ALGORITHM` | `sha256` | Only `sha256` is accepted in 0.1.x |
+| `JOB_IDLE_TIMEOUT_MS` | `1000` | Short archive fallback used only when no observed response/document/partial-frame state is pending; otherwise combined with `RESPONSE_TIMEOUT_SEC` |
+| `SAVE_RAW` | `true` | Mandatory request and response RAW copies; `false` is rejected |
+| `SAVE_TECHNICAL_TXT` | `true` | Mandatory directional technical transcript and machine-readable JSONL receive timeline; `false` is rejected |
+| `SAVE_CLEAN_TXT` | `true` | Publish byte-identical `.PULITO.txt` and `.receipt.txt` sidecars; recognized streams contain captured human fields under inferred command semantics |
+| `SAVE_PDF` | `true` | Publish a labelled proxy-rendered PDF sidecar from the same conservative captured-field model |
+| `SAVE_JSON` | `true` | Mandatory forensic manifest; `false` is rejected in the current release |
+| `HASH_ALGORITHM` | `sha256` | Only `sha256` is accepted in the current release |
 | `DEBUG` | `false` | Enable debug-level application behavior |
 | `DEBUG_HEXDUMP` | `false` | Request bounded payload hexdump logging |
 | `DEBUG_PCAP` | `false` | Reserved; external PCAP tooling is still required |
 | `LOG_PAYLOAD` | `false` | Second explicit gate required for hexdump output |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
-| `RETENTION_DAYS` | `0` | `0` means no deletion; 0.1.0 does not schedule pruning |
+| `RETENTION_DAYS` | `0` | `0` means no deletion; 0.2.0 does not schedule pruning |
 | `MAX_PAYLOAD_BYTES` | `67108864` | Per-fallback-job combined directional capture cap |
 | `RENDERER_PAPER_WIDTH_MM` | `79.5` | Provisional brochure-derived PDF width; configure and verify on the installed device |
 | `RENDERER_CHARACTERS_PER_LINE` | `48` | Provisional brochure maximum used for wrapping; physical fidelity remains unconfirmed |

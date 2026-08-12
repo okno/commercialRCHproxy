@@ -1,0 +1,8 @@
+VOCE SINTETICA 0,00
+#
+#Ordine: XX
+#
+TOTALE 0,00
+IMPORTO PAGAMENTO 0,00
+
+DOCUMENTO N. (solo suffisso) 0000
