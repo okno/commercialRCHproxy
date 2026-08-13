@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly SERVICE_NAME="commercialrchproxy.service"
+readonly DUMPER_SERVICE="commercialrchproxy-dumper.service"
+readonly PARSER_SERVICE="commercialrchproxy-parser.service"
 CONFIG_PATH="/etc/commercialrchproxy/commercialrchproxy.conf"
 usage() {
     cat <<'EOF'
@@ -36,7 +37,7 @@ done
 
 PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly PROJECT_ROOT
-readonly INSTALLED_CLI="/opt/commercialrchproxy/current/venv/bin/commercialrchproxy"
+readonly INSTALLED_CLI="/opt/commercialrchproxy/current/venv/bin/commercialrchproxy-dumper"
 
 select_python() {
     local candidate
@@ -53,15 +54,15 @@ select_python() {
 run_cli() {
     if [[ -x "${INSTALLED_CLI}" ]]; then
         "${INSTALLED_CLI}" "$@"
-    elif command -v commercialrchproxy >/dev/null 2>&1; then
-        commercialrchproxy "$@"
+    elif command -v commercialrchproxy-dumper >/dev/null 2>&1; then
+        commercialrchproxy-dumper "$@"
     elif [[ -d "${PROJECT_ROOT}/src/commercialrchproxy" ]]; then
         local python_bin
         python_bin="$(select_python)" || die "Python 3.11+ is required to inspect the source tree."
         PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
-            "${python_bin}" -m commercialrchproxy "$@"
+            "${python_bin}" -m commercialrchproxy.dumper.main "$@"
     else
-        die "commercialrchproxy is not installed and no source tree was found."
+        die "commercialrchproxy-dumper is not installed and no source tree was found."
     fi
 }
 
@@ -109,10 +110,17 @@ if [[ "${app_rc}" -ne 0 ]]; then
     overall_rc=1
 fi
 
-if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "${SERVICE_NAME}"; then
-    printf 'PASS: systemd reports %s active.\n' "${SERVICE_NAME}"
+if command -v systemctl >/dev/null 2>&1; then
+    for service_name in "${DUMPER_SERVICE}" "${PARSER_SERVICE}"; do
+        if systemctl is-active --quiet "${service_name}"; then
+            printf 'PASS: systemd reports %s active.\n' "${service_name}"
+        else
+            printf 'FAIL: systemd does not report %s active.\n' "${service_name}" >&2
+            overall_rc=1
+        fi
+    done
 else
-    printf 'FAIL: systemd does not report %s active.\n' "${SERVICE_NAME}" >&2
+    printf 'FAIL: systemctl is unavailable.\n' >&2
     overall_rc=1
 fi
 

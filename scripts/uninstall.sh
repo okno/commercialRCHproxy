@@ -2,21 +2,28 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly SERVICE_NAME="commercialrchproxy.service"
-readonly SERVICE_USER="commercialrchproxy"
-readonly SERVICE_GROUP="commercialrchproxy"
+readonly DUMPER_SERVICE="commercialrchproxy-dumper.service"
+readonly PARSER_SERVICE="commercialrchproxy-parser.service"
+readonly LEGACY_SERVICE="commercialrchproxy.service"
+readonly SERVICES=("${DUMPER_SERVICE}" "${PARSER_SERVICE}" "${LEGACY_SERVICE}")
 readonly CONFIG_DIR="/etc/commercialrchproxy"
+readonly CONFIG_PATH="${CONFIG_DIR}/commercialrchproxy.conf"
 readonly APP_ROOT="/opt/commercialrchproxy"
-readonly DATA_DIR="/var/lib/commercialrchproxy"
-readonly LOG_DIR="/var/log/commercialrchproxy"
 readonly RUNTIME_DIR="/run/commercialrchproxy"
 readonly LIBEXEC_DIR="/usr/local/libexec/commercialrchproxy"
-readonly UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}"
+readonly UNIT_DIR="/etc/systemd/system"
 readonly SECONDARY_UNIT_PATH="/etc/systemd/system/commercialrchproxy-secondary-ip.service"
 readonly SECONDARY_CONFIG_PATH="${CONFIG_DIR}/secondary-ip.conf"
 readonly SECONDARY_HELPER_PATH="/usr/local/libexec/commercialrchproxy-network/manage_secondary_ip.sh"
-readonly SECONDARY_DROPIN_PATH="/etc/systemd/system/${SERVICE_NAME}.d/10-secondary-ip.conf"
+readonly SECONDARY_DROPIN_PATH="/etc/systemd/system/${DUMPER_SERVICE}.d/10-secondary-ip.conf"
+readonly LEGACY_SECONDARY_DROPIN_PATH="/etc/systemd/system/${LEGACY_SERVICE}.d/10-secondary-ip.conf"
 readonly PURGE_PHRASE="PURGE commercialRCHproxy"
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+# shellcheck source=scripts/config_contract.sh
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/config_contract.sh"
 
 PURGE=0
 CONFIRM_PURGE=""
@@ -25,11 +32,11 @@ usage() {
     cat <<'EOF'
 Usage: sudo ./scripts/uninstall.sh [--purge [--confirm-purge PHRASE]]
 
-Default uninstall removes the service, application releases, and installed
+Default uninstall removes all application services, releases, and installed
 operations scripts while preserving:
   /etc/commercialrchproxy
-  /var/lib/commercialrchproxy
-  /var/log/commercialrchproxy
+  configured OUTPUT_DIR
+  configured LOG_DIR
   /var/backups/commercialrchproxy
 
 --purge additionally deletes configuration, captured jobs, and logs. It always
@@ -102,36 +109,58 @@ fi
 command -v flock >/dev/null 2>&1 || die "flock is required (package: util-linux)."
 acquire_mutation_lock
 
+CONTRACT_AVAILABLE=0
+if [[ -e "${CONFIG_PATH}" || -L "${CONFIG_PATH}" ]]; then
+    crch_load_config_contract "${CONFIG_PATH}" || \
+        die "Cannot determine configured identity/output/log targets safely. Nothing was removed."
+    SERVICE_USER="${CRCH_SERVICE_USER}"
+    SERVICE_GROUP="${CRCH_SERVICE_GROUP}"
+    OUTPUT_DIR="${CRCH_OUTPUT_DIR}"
+    LOG_DIR="${CRCH_LOG_DIR}"
+    readonly SERVICE_USER SERVICE_GROUP OUTPUT_DIR LOG_DIR
+    CONTRACT_AVAILABLE=1
+elif [[ "${PURGE}" -eq 1 ]]; then
+    die "Purge requires the preserved regular configuration ${CONFIG_PATH} to resolve exact targets. Nothing was removed."
+fi
+
 # These literal guards make future edits fail closed before recursive removal.
 [[ "${APP_ROOT}" == "/opt/commercialrchproxy" ]] || die "Unsafe APP_ROOT"
 [[ "${LIBEXEC_DIR}" == "/usr/local/libexec/commercialrchproxy" ]] || die "Unsafe LIBEXEC_DIR"
 [[ "${CONFIG_DIR}" == "/etc/commercialrchproxy" ]] || die "Unsafe CONFIG_DIR"
-[[ "${DATA_DIR}" == "/var/lib/commercialrchproxy" ]] || die "Unsafe DATA_DIR"
-[[ "${LOG_DIR}" == "/var/log/commercialrchproxy" ]] || die "Unsafe LOG_DIR"
+if [[ "${CONTRACT_AVAILABLE}" -eq 1 ]]; then
+    [[ "${OUTPUT_DIR}" == "${CRCH_OUTPUT_DIR}" && "${LOG_DIR}" == "${CRCH_LOG_DIR}" ]] || \
+        die "Configured purge-target validation failed."
+    for managed_path in "${OUTPUT_DIR}" "${LOG_DIR}"; do
+        [[ ! -L "${managed_path}" ]] || die "Refusing symlinked configured path: ${managed_path}"
+    done
+fi
 
 if [[ "${PURGE}" -eq 1 ]] && \
    { [[ -e "${SECONDARY_UNIT_PATH}" || -L "${SECONDARY_UNIT_PATH}" || \
         -e "${SECONDARY_CONFIG_PATH}" || -L "${SECONDARY_CONFIG_PATH}" || \
         -e "${SECONDARY_HELPER_PATH}" || -L "${SECONDARY_HELPER_PATH}" || \
-        -e "${SECONDARY_DROPIN_PATH}" || -L "${SECONDARY_DROPIN_PATH}" ]] || \
+        -e "${SECONDARY_DROPIN_PATH}" || -L "${SECONDARY_DROPIN_PATH}" || \
+        -e "${LEGACY_SECONDARY_DROPIN_PATH}" || -L "${LEGACY_SECONDARY_DROPIN_PATH}" ]] || \
      systemctl is-active --quiet commercialrchproxy-secondary-ip.service || \
      systemctl is-enabled --quiet commercialrchproxy-secondary-ip.service; }; then
     die "The optional secondary-IP service still depends on ${CONFIG_DIR}. Run /usr/local/libexec/commercialrchproxy-network/manage_secondary_ip.sh uninstall (or the checkout copy) first, then rerun the purge."
 fi
 
-systemctl disable --now "${SERVICE_NAME}" >/dev/null 2>&1 || true
-rm -f -- "${UNIT_PATH}"
+systemctl disable --now "${SERVICES[@]}" >/dev/null 2>&1 || true
+for service_name in "${SERVICES[@]}"; do
+    rm -f -- "${UNIT_DIR}/${service_name}"
+done
 systemctl daemon-reload
-systemctl reset-failed "${SERVICE_NAME}" >/dev/null 2>&1 || true
+systemctl reset-failed "${SERVICES[@]}" >/dev/null 2>&1 || true
 
 rm -rf -- "${APP_ROOT}"
 rm -rf -- "${LIBEXEC_DIR}"
 rm -rf -- "${RUNTIME_DIR}"
 
 if [[ "${PURGE}" -eq 1 ]]; then
-    rm -rf -- "${CONFIG_DIR}"
-    rm -rf -- "${DATA_DIR}"
+    rm -rf -- "${OUTPUT_DIR}"
     rm -rf -- "${LOG_DIR}"
+    rm -rf -- "${CONFIG_DIR}"
     if id -u "${SERVICE_USER}" >/dev/null 2>&1; then
         userdel "${SERVICE_USER}"
     fi
@@ -140,14 +169,18 @@ if [[ "${PURGE}" -eq 1 ]]; then
             printf 'WARNING: group %s is still in use and was retained.\n' "${SERVICE_GROUP}" >&2
     fi
     printf 'PURGED: %s, %s, and %s were deleted and are not recoverable unless separately backed up.\n' \
-        "${CONFIG_DIR}" "${DATA_DIR}" "${LOG_DIR}"
+        "${CONFIG_DIR}" "${OUTPUT_DIR}" "${LOG_DIR}"
     printf 'PRESERVED: /var/backups/commercialrchproxy (if present).\n'
 else
     printf 'PRESERVED: configuration in %s\n' "${CONFIG_DIR}"
-    printf 'PRESERVED: captured jobs in %s\n' "${DATA_DIR}"
-    printf 'PRESERVED: logs in %s\n' "${LOG_DIR}"
-    printf 'PRESERVED: service account %s so retained file ownership remains stable.\n' "${SERVICE_USER}"
+    if [[ "${CONTRACT_AVAILABLE}" -eq 1 ]]; then
+        printf 'PRESERVED: captured jobs in %s\n' "${OUTPUT_DIR}"
+        printf 'PRESERVED: logs in %s\n' "${LOG_DIR}"
+        printf 'PRESERVED: service account %s so retained file ownership remains stable.\n' "${SERVICE_USER}"
+    else
+        printf 'PRESERVED: configured output/log trees and service account (configuration was unavailable).\n'
+    fi
     printf 'PRESERVED: optional secondary-IP service/address state, if separately installed.\n'
 fi
-printf 'PASS: application, service unit, and installed operations scripts were removed.\n'
+printf 'PASS: application, all three service units, and installed operations scripts were removed.\n'
 printf 'PASS: no host network settings were changed and no network connection was opened.\n'

@@ -2,44 +2,82 @@
 
 ## Assets
 
-- Availability and intended byte integrity of the management-to-configured-device flow; installed-device application-byte transparency remains gated by C-4.
-- Receipt/document payload confidentiality.
-- Directional archive integrity and traceability.
-- RCH signed documents, if ever retrieved.
-- Configuration and endpoint correctness.
+- relay availability and intended directional byte integrity;
+- confidentiality/integrity of request/response RAW and derived receipts;
+- capture manifest/timeline traceability and persistent counter state;
+- configuration/endpoints and service identity;
+- rollback evidence for transactions with unknown fiscal outcome.
 
-## Threats addressed
+## Process separation
 
-- XML external entities/DTD expansion: rejected before secure parsing.
-- Path traversal: generated names and sanitized device directory.
-- Symlink output redirection: root/application directory checks and no-follow temporary creation.
-- Partial sidecars: same-directory temp + `fsync` + atomic replace.
-- Excessive payload memory: per-job bound with explicit incomplete evidence.
-- Overprivileged port bind: dedicated account plus only `CAP_NET_BIND_SERVICE`.
-- Accidental payload disclosure: no payload logging unless three debug gates are intentionally enabled.
-- False success/replay: no synthetic response and no store-forward/retry path.
+The Dumper and Parser share only the persistent spool:
+
+- Dumper has network access and only `CAP_NET_BIND_SERVICE`; it contains no
+  semantic Parser/PDF dependency;
+- Parser has no capabilities and its systemd unit denies IP networking;
+- both run non-root with `UMask=0027`, read-only config/application, and only
+  job/log roots writable;
+- distinct logs/journald identifiers reduce failure/audit ambiguity.
+
+Compromise of either service identity can still affect files that identity owns;
+SHA-256 is not an external/WORM integrity anchor. Export capture commitments to
+protected off-host storage when a stronger boundary is required.
+
+## Controls
+
+- generated/sanitized path components and strict numeric `CODICE_DOC`;
+- contained regular non-symlink artifacts and no-follow/exclusive creation;
+- hidden partial staging, file/directory fsync, manifest hash, ready binding,
+  atomic directory rename;
+- Parser revalidation before `.parsed` and immutable snapshots around reparse;
+- bounded payload, events, metadata, diagnostics, documents, and workers;
+- no synthetic reply, network replay, automatic partial promotion, or RAW
+  deletion during parsing;
+- no INFO payload; bounded hexdump needs all three explicit debug gates;
+- parser claim token/heartbeat/stale threshold, token-private staging, and
+  lease-fenced promotion under the advisory lock;
+- bounded non-blocking structured-log queue: slow sinks cannot stall relay,
+  though saturation can drop operational records;
+- file mode `0640`, directory `0750`, no other-user permissions.
 
 ## Residual threats
 
-- The current TCP implementation adds no server/client authentication or encryption. Accessible RCH evidence does not establish the installed-device IP transport or its application security; NET-2 and authenticated documentation remain required.
-- ARP/DNS/routing attacks are outside the application trust boundary.
-- The service identity owns its archive tree, so compromise of that process can alter artifacts and matching local hashes; host root can do the same. SHA-256 is not an external timestamp or WORM anchor. Export manifests/hashes to protected off-host or WORM storage for a stronger integrity boundary.
-- Local disk is not encrypted by this project.
-- Resource bounds are per job; deployment-level memory, file, process, and disk quotas remain necessary.
-- An idle/hostile client can consume a printer session; network ACLs and monitoring are required.
-- Application timing changes are inherent in a two-connection proxy.
+- Port 23 traffic has no added authentication/encryption. Use an isolated
+  approved network and ACLs.
+- ARP/routing/firewall/device compromise is outside the application boundary.
+- Host root/storage administrator can alter local evidence and hashes.
+- Application-level proxying necessarily changes TCP endpoints/timing/packets.
+- Default storage-continue policy can preserve relay while losing complete
+  capture publication; critical monitoring is required.
+- Disk encryption, quota/capacity monitoring, off-host backup,
+  retention/disposal, and WORM anchoring are external operations. Component
+  JSONL files rotate internally by size with bounded backups; journald/Wazuh
+  rotation and retention remain external.
+- A hostile/idle client can consume connection/session resources; limits and
+  ACLs reduce but do not remove denial-of-service risk.
+- Two independently launched Dumper instances do not share the in-memory
+  physical-device session lock and are unsupported.
 
-## systemd containment
+## systemd verification
 
-The unit uses strict filesystem protection, private temporary/device namespaces, kernel/control-group protection, address-family restriction, syscall filters where compatible, `NoNewPrivileges`, and explicit writable data/log paths.
-
-Review directives against the deployed Debian/systemd version with:
+Review on the deployed Debian/systemd version:
 
 ```bash
-systemd-analyze security commercialrchproxy.service
-systemd-analyze verify /etc/systemd/system/commercialrchproxy.service
+systemd-analyze verify /etc/systemd/system/commercialrchproxy-dumper.service
+systemd-analyze verify /etc/systemd/system/commercialrchproxy-parser.service
+systemd-analyze security commercialrchproxy-dumper.service
+systemd-analyze security commercialrchproxy-parser.service
 ```
 
-## Retention and backups
+The legacy launcher is no-op convenience, not the security boundary. See
+[SYSTEMD.md](SYSTEMD.md).
 
-`RETENTION_DAYS=0` disables deletion. Version 0.2.0 does not run automated pruning. Backups can contain sensitive commercial/personal data; protect, encrypt, access-control, test, and dispose of them under applicable policy.
+## Sensitive evidence
+
+RAW, timeline, manifest, parsed JSON, TXT/PDF, logs with debug payload, PCAP,
+config, hashes, and photographs can contain business, personal, network,
+device, and fiscal data. Restrict/encrypt/back up/dispose under applicable
+policy. Never commit production artifacts.
+
+`RETENTION_DAYS=0` disables deletion intent, and 0.3.0 has no automatic pruning
+implementation. Parser/reparse never deletes capture evidence.

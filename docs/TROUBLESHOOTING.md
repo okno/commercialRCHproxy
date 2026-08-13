@@ -1,6 +1,38 @@
 # Troubleshooting
 
-## IP not assigned
+## Are the two services up?
+
+```bash
+systemctl is-active commercialrchproxy-dumper.service
+systemctl is-active commercialrchproxy-parser.service
+systemctl status commercialrchproxy-dumper.service --no-pager
+systemctl status commercialrchproxy-parser.service --no-pager
+journalctl -u commercialrchproxy-dumper.service \
+  -u commercialrchproxy-parser.service --since today
+```
+
+The legacy `commercialrchproxy.service` is only a no-op launcher and is not a
+substitute for checking both real units.
+
+## Where are captured files?
+
+Read `OUTPUT_DIR` from the shared config; default:
+
+```text
+/var/lib/commercialrchproxy/jobs/<printer>/YYYY/MM/DD/<CODICE_DOC>/
+```
+
+Find committed jobs without reading payload:
+
+```bash
+find /var/lib/commercialrchproxy/jobs -type f -name .ready -print
+find /var/lib/commercialrchproxy/jobs -type f -name .parsed -print
+```
+
+See [STORAGE_LAYOUT.md](STORAGE_LAYOUT.md). Production files may contain
+sensitive data; do not copy them into public issues.
+
+## Listener IP not assigned
 
 Symptom:
 
@@ -8,8 +40,8 @@ Symptom:
 Cannot bind 192.0.2.231:23. The IP address is not assigned to this host.
 ```
 
-The proxy never adds the IP automatically. If the optional secondary-address
-service is installed, run:
+The Dumper never adds the IP. Check the host network manager or separately
+installed helper:
 
 ```bash
 sudo ./scripts/manage_secondary_ip.sh check
@@ -17,194 +49,219 @@ systemctl status commercialrchproxy-secondary-ip.service --no-pager
 ip -4 address
 ```
 
-An absent address after reboot or network-manager reload can mean the LAN
-interface was recreated after the oneshot service ran. Restart the secondary
-service only in an approved change window, or configure the address natively
-in the host network manager. An interface/prefix mismatch is rejected rather
-than corrected automatically. See [secondary network address](NETWORK_ADDRESS.md).
+Do not guess a prefix or add an address without network approval. See
+[NETWORK_ADDRESS.md](NETWORK_ADDRESS.md).
 
 ## Permission denied on port 23
 
-Confirm the systemd unit has only `CAP_NET_BIND_SERVICE`, is started through systemd, and has not been replaced by an unrestricted manual root process.
+The Dumper should have only bind capability:
 
 ```bash
-systemctl cat commercialrchproxy
-systemctl show commercialrchproxy -p AmbientCapabilities -p CapabilityBoundingSet
+systemctl show commercialrchproxy-dumper.service \
+  -p User -p Group -p AmbientCapabilities -p CapabilityBoundingSet
 ```
 
-## Listener already used
+Do not work around it by running the application as root. The Parser should
+have no capability.
+
+## Listener already in use
 
 ```bash
 sudo ss -ltnp 'sport = :23'
 ```
 
-Do not kill an unknown process until ownership and business impact are established.
+Identify ownership/business impact before stopping any process. Do not run a
+second Dumper against the same physical endpoint.
 
-## Printer unreachable
+## Device unreachable
 
-Check addressing, VLAN/firewall, cabling/Wi-Fi, switch state, and the physical device using approved infrastructure telemetry and passive capture. The health/config checks do not connect to the fiscal port, and no live connect probe is provided. Do not use `telnet`, `nc`, an empty connection, or guessed commands during business operation: the safety of even a payload-free session is `UNCONFIRMED`.
+Inspect approved infrastructure telemetry, route/VLAN/firewall, cabling, and
+device state. The Dumper logs bounded connect attempts and closes the client
+without creating a synthetic reply.
+
+Do not use `telnet`, `nc`, or an empty guessed connection during business
+operation. Health/config checks deliberately avoid a device connection.
 
 ## Management timeout or missing response tail
 
-Capture direct and proxy baselines. Compare request/response timing, FIN/RST, retransmission, and late response delay. Adjust `RESPONSE_TIMEOUT_SEC` only from observed evidence. Do not synthesize a reply.
+Inspect the Dumper journal and capture manifest `close_reason`. A
+`tail_timeout...` status means the opposite pump did not finish within
+`RESPONSE_TIMEOUT_SEC` after the first clean EOF. Compare authorized direct and
+proxy PCAP timing before changing it. Never synthesize a response.
 
-## Too many/few job files
+## Dumper active, Parser stopped
 
-Do not concatenate files by timestamp alone. Check, in order:
-
-1. `session_id`, client port and `job_boundary_source` in each manifest;
-2. request/response frame counts and BCC issues in `.parsed.json`;
-3. direction and continuous `session_offset` values in `.timeline.jsonl`;
-4. inferred document source offsets and completeness;
-5. direct/proxy PCAP when available.
-
-The private reference case contained four byte-identical display exchanges,
-but they came from four distinct TCP sessions. They are genuine repeated
-operations, not fragments to merge or duplicates to delete.
-
-The old recorder also split one same-session commercial exchange after one
-second of inactivity. The corrected boundary tracker waits through
-`RESPONSE_TIMEOUT_SEC + JOB_IDLE_TIMEOUT_MS` while a response, candidate
-document or partial frame remains pending. ACK alone does not complete a
-pending framed response.
-
-If a response arrives after even that extended fallback, it is preserved in a
-separate segment with `job_boundary_source=orphan_late_response` and confidence
-`0.10`. This is forensic evidence, not a standalone receipt. Ordinary
-`fallback_inactivity` and `fallback_connection_close` are likewise storage
-boundaries, never proof of fiscal completion.
-
-If a real exchange still splits, retain every part and its manifest. Increase
-timeouts only from measured device timing; do not hide the symptom by blindly
-concatenating unrelated sessions.
-
-## Empty or partial receipt/PULITO
-
-`<job>.receipt.txt` and `<job>.PULITO.txt` are populated only when an observed
-commercial or management command sequence yields captured human fields. Check:
+This is supported. Ready jobs should accumulate and relay should continue.
+Check:
 
 ```bash
-commercialrchproxy-inspect <job>.raw --json
+find /var/lib/commercialrchproxy/jobs -type f -name .ready -print
+systemctl start commercialrchproxy-parser.service
+journalctl -u commercialrchproxy-parser.service -f
 ```
 
-If the console entry point is not installed, use:
+Parser will scan backlog deterministically. A parsed job receives `.parsed`.
 
-```bash
-python -m commercialrchproxy.tools.inspect_stream <job>.raw --json
-```
+## Hidden `.partial` directory
 
-Common results:
-
-- `unrecognized_stream`: no valid observed frame profile; inspect RAW and
-  framing issues without changing the input;
-- `framed_stream_no_document_reconstructed`: frames are valid but only
-  auxiliary/unknown commands were present, such as a display update;
-- `partial_document_reconstruction_inferred_semantics_with_issues`: human
-  fields were recovered, but the inferred close sequence is absent;
-- `parser_error_raw_preserved`: derived parsing failed; RAW remains the source
-  for re-analysis;
-- `complete_document_reconstruction_inferred_semantics`: an inferred close was
-  captured, not proof of printer or fiscal success.
-
-Any framed reconstruction status may end in `_with_issues`; inspect the typed
-issues instead of treating the suffix as data loss by itself.
-
-An empty header/footer can be correct. In the supplied cases, merchant header,
-printed document heading, device identifier and fiscal footer were absent from
-the client request stream and were likely generated by device state. Do not
-copy photo-only values into output merely to make it resemble the paper.
-
-## Receipt differs from the paper
-
-Compare each disputed field through the reconstruction chain:
+A crash/storage error can leave:
 
 ```text
-receipt line
-  -> parsed.json line/source
-  -> request frame id and offsets
-  -> raw byte range
-  -> timeline event
+.<code>.<job-id>.partial/
 ```
 
-If the value exists in RAW but is missing or malformed in output, keep the
-case as an anonymized regression fixture and update the evidence-labelled
-mapping. If it exists only on paper, leave it null/absent and record it as
-printer-generated or unknown. The supplied commercial photo also has a time
-discrepancy with the captured chronology; do not resolve it by overwriting RAW
-metadata.
+It is intentionally invisible to Parser discovery and must not be renamed to
+a final code or given a hand-made `.ready`. Preserve it and correlate the
+Dumper's critical `capture_partial_recovery_required`/
+`capture_spool_failed` log. Use protected offline analysis if recovery is
+required. Do not delete it until retention/evidence owners approve.
 
-## Invalid BCC, malformed or truncated frame
+## Ready job is not parsed
 
-Inspect `request_framing.issues` and `response_framing.issues` in parsed JSON.
-Typical issue codes include `invalid_bcc`, `malformed_header`,
-`invalid_terminator`, `unframed_bytes`, `oversize_frame` and
-`truncated_frame`.
-
-Never edit the RAW file to make a checksum pass. First verify whether all
-archive parts for the same session are present and ordered by session offset.
-Then compare a packet capture if available. A malformed frame remains evidence
-and parsing continues from the next safe control candidate.
-
-## ACK/status confusion
-
-`0x06` is stored as a standalone `ack` stream event. It is not a framed
-response, receipt byte or success field. The reference corpus contains 39 ACK
-events and 38 framed responses, so a one-to-one `ACK + recv()` assumption is
-demonstrably false. Response payload meanings, NAK/error rules and fiscal
-completion remain unknown without authenticated documentation and controlled
-device tests.
-
-## Timeline/hash mismatch
-
-For each JSONL event, select `byte_count` bytes from the directional RAW at
-`job_offset` and verify its SHA-256. Use `session_offset` only for correlation
-across jobs in the same session. Monotonic timestamps order/measure events in
-one process lifetime; wall-clock ISO timestamps provide the archival time.
-
-A mismatch means the evidence set is incomplete or altered. Stop semantic
-analysis and preserve copies before investigating storage or transfer history.
-
-## Reconstructing old same-session split jobs
-
-Use archive-directory mode rather than manually concatenating files:
+Inspect only metadata/markers first:
 
 ```bash
-commercialrchproxy-inspect /path/to/archive \
-  --output-dir /path/to/protected/reconstruction
+find <job-dir> -maxdepth 2 -printf '%P %y\n'
+journalctl -u commercialrchproxy-parser.service --since today
 ```
 
-The tool groups only exact `session_id` values and orders their manifests by
-capture start timestamp. Review its hash warnings and each generated
-`metadata.json`. The resulting directional BIN files cover the entire grouped
-session; document frame IDs and offsets identify the relevant range. Distinct
-sessions are never merged automatically.
+Possible states:
 
-For manually supplied RAW parts, positional request paths and repeatable
-`--response` paths are concatenated exactly in command-line order. Verify that
-order from manifests/timeline before using this mode.
+- `.processing`: another worker owns the job; verify age/heartbeat before
+  assuming it is stale;
+- `.parse_attempts.json`: retries remain;
+- `.parse_failed`: retries exhausted; inspect error and use explicit reparse;
+- `.parsed`: already complete/no-op;
+- no marker: not yet scanned, watcher/poll delay, unsafe/invalid ready job, or
+  service failure.
+
+Run one bounded scan when intended:
+
+```bash
+commercialrchproxy-parser \
+  --config /etc/commercialrchproxy/commercialrchproxy.conf --once
+```
+
+Do not manually remove `.processing` on a live worker. Stale recovery is token,
+age, heartbeat, and lock protected.
+
+## Hash/manifest mismatch
+
+Parser rejects a `.ready` marker that does not authenticate `manifest.json`,
+or any request/response/timeline whose SHA-256 differs from the manifest.
+Treat this as altered/incomplete evidence:
+
+1. stop reparse attempts;
+2. preserve the full directory and storage logs;
+3. compare against protected backup;
+4. investigate disk/copy/administrator activity;
+5. never edit RAW or manifest just to make parsing pass.
+
+## No `PHARSED` or empty result
+
+A valid framed stream may contain no supported document. The Parser retries and
+eventually marks `.parse_failed`; it does not create fake receipt content.
+
+Use the inspector on a protected copy/path:
+
+```bash
+commercialrchproxy-inspect-dump <request.raw> \
+  --response <response.raw> --json --receipt
+```
+
+Check framing issues, candidate count/completeness, and unknown commands. The
+new supplied private job legitimately yields one incomplete commercial
+candidate; three other photographs have no supplied payload.
+
+## TXT/PDF differs from paper
+
+Trace a disputed field:
+
+```text
+TXT/PDF line
+  -> PHARSED/parsed.json semantic/source
+  -> request frame ID and offsets
+  -> request RAW byte range
+  -> timeline receive event
+```
+
+If the value exists in RAW but is mapped incorrectly, create a structurally
+sanitized checksum-correct regression fixture. If it exists only on paper,
+record it as printer-generated/unknown and keep it absent. Photos never fill
+the model.
+
+Capture and printed clocks can differ; parsed filenames use capture timeline
+time in configured timezone, not the paper timestamp.
+
+## Reparse safely
+
+Validate first:
+
+```bash
+commercialrchproxy-reparse <job-dir> \
+  --config /etc/commercialrchproxy/commercialrchproxy.conf \
+  --code <CODICE_DOC> --dry-run
+```
+
+Preserve old output:
+
+```bash
+commercialrchproxy-reparse <job-dir> \
+  --config /etc/commercialrchproxy/commercialrchproxy.conf \
+  --code <CODICE_DOC> --backup-existing
+```
+
+Without `--backup-existing`, existing `PHARSED` is refused. Reparse validates
+that immutable capture hashes did not change.
+
+## Import legacy RAW without network replay
+
+```bash
+commercialrchproxy-replay <request.raw> --response <response.raw> \
+  --config /etc/commercialrchproxy/commercialrchproxy.conf --json
+```
+
+This imports to spool and performs no network activity. It uses import time and
+creates a new code, so keep a private migration ledger and never duplicate
+imports to simulate missing evidence. See [MIGRATION.md](MIGRATION.md).
 
 ## Disk/archive failure
 
-Forwarding may continue while sidecars fail. Treat missing/partial evidence seriously, inspect `capture_segment_archive_failed` logs, free protected disk space, and verify filesystem ownership/mount health. Do not replay an unknown-state job.
+With default `STORAGE_FAILURE_POLICY=continue`, forwarding may continue while
+capture publication fails. This protects relay continuity but can leave only a
+critical log/partial. With `abort`, storage failure may terminate the session.
 
-The storage path publishes directional RAW and timeline before invoking the
-semantic parser. A parser exception should appear as
-`parser_error_raw_preserved`; missing RAW indicates a capture/storage problem,
-not merely an unsupported command.
+Check free space, inode usage, mount health, ownership/modes, and service
+sandbox paths. Do not replay a request whose fiscal outcome is unknown.
 
-## Sharing an example for support
+## Unexpected parsed filename
 
-Do not publish real RAW, response RAW, timeline, technical TXT, parsed JSON,
-manifest, PCAP or receipt photograph. They can contain private network,
-business, fiscal, device and transaction data. Produce a structural fixture by
-replacing every literal, preserving frame lengths/order/split points and
-recomputing BCC. Run `./scripts/secret_check.sh` before committing it.
+Parsed names use configured local timezone and the candidate opener's request
+timeline event:
 
-## Logs
-
-```bash
-journalctl -u commercialrchproxy --since today
-tail -f /var/log/commercialrchproxy/commercialrchproxy.jsonl
+```text
+<code>_<C|G>_<HH.MM.SS.mmm>[_NN].txt|pdf
 ```
 
-Payload is absent by default.
+Unix time appears only in RAW names/technical metadata. If timezone changed,
+back up `PHARSED` before explicit reparse; existing files are not renamed
+automatically.
+
+## Logs and payload privacy
+
+```bash
+journalctl -u commercialrchproxy-dumper.service --since today
+journalctl -u commercialrchproxy-parser.service --since today
+tail -f /var/log/commercialrchproxy/commercialrchproxy-dumper.jsonl
+tail -f /var/log/commercialrchproxy/commercialrchproxy-parser.jsonl
+```
+
+Payload is absent from INFO logs. Bounded hexdump requires all of `DEBUG=true`,
+`DEBUG_HEXDUMP=true`, and `LOG_PAYLOAD=true`; use only under approved handling.
+
+## Sharing an example
+
+Never publish real RAW, response, timeline, manifest, parsed JSON, TXT/PDF,
+logs with payload, PCAP, photo, config, endpoints, source hash, merchant/device
+identity, product, value, or timestamp. Create a synthetic fixture, recompute
+length/BCC, and run the repository privacy/secret guard before committing.

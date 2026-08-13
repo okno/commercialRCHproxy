@@ -1,261 +1,258 @@
 # commercialRCHproxy
 
-`commercialRCHproxy` is a full-duplex relay and forensic receipt reconstructor
-for traffic observed around **RCH Print! F**. It is **not** a replacement
-virtual fiscal printer: the physical RCH Print! F remains the device that
-performs fiscal/RT functions. Application-byte transparency on the installed
-device remains an acceptance target until gate C-4 passes.
+> [!IMPORTANT]
+> **Repository autonomo congelato.** Questa codebase resta disponibile come
+> ultima implementazione standalone di `commercialRCHproxy` e conserva la
+> propria documentazione operativa, ma non riceverà nuove funzionalità.
+> Correzioni, parser, deployment e sviluppo antifrode proseguono nel monorepo
+> [RetailPrintGuard](https://github.com/okno/RetailPrintGuard), dove il proxy
+> RCH rimane un processo indipendente dal database, dall'API e dalla web app.
+> Per nuove installazioni usare RetailPrintGuard; mantenere questo repository
+> soltanto per audit, rollback controllato e manutenzione di installazioni
+> legacy già esistenti.
 
-The current implementation accepts a TCP connection from the management software on the configured proxy endpoint, opens an independent TCP connection to the configured physical-device endpoint, and copies both streams without intentional protocol substitution. Public examples use RFC 5737 documentation addresses and must be replaced in the private site configuration:
+`commercialRCHproxy` 0.3.0 separates the network relay from receipt
+reconstruction. The **Dumper** forwards an opaque full-duplex byte stream and
+publishes immutable RAW jobs; the independent **Parser** consumes only
+atomically completed jobs and creates human-readable TXT/PDF sidecars.
 
-```text
-Gestionale  <-- implemented TCP hypothesis -->  commercialRCHproxy  <-- implemented TCP hypothesis -->  RCH Print! F
-```
-
-The supplied private artifacts now confirm an STX/ETX frame layout, decimal
-length, standalone ACK events and XOR BCC for the two correlated document
-cases. The receipt parser can reconstruct the human-visible fields that are
-actually present in those request streams. Command roles and document
-lifecycles remain reverse-engineered (`INFERRED`), not an authenticated RCH
-specification. Production acceptance still requires installed firmware
-identification, authenticated protocol semantics, direct/proxy PCAP comparison
-and target-device testing.
-
-The private corpus, photographs, business values, device identifiers, network
-addresses and hashes are not committed. Public tests use structurally
-equivalent anonymized fixtures with recomputed checksums.
-
-## Safety position
-
-- No ESC/POS, POS80BL, port-9100, cut-command, `ESC`, `GS`, `DLE`, or
-  bitmap assumption is used. The relay never decodes inline bytes. The supplied
-  payload subset is 7-bit; Latin-1 in protocol diagnostics is only a lossless
-  byte view, and non-ASCII device encoding remains `UNKNOWN`.
-- RCH documents Print! F Ethernet operation on port 23. Accessible RCH material does **not** establish TCP, UDP, raw mode, or Telnet. The supplied run contains TCP-session metadata, while TCP as a general official Print! F property remains `UNKNOWN`. Candidate Telnet IAC bytes are observed only as evidence and are not consumed.
-- The proxy never creates `ACK`, `NAK`, `OK`, success, or fiscal-status responses.
-- Forwarding is independent of XML parsing, classification, hashing, TXT, JSON, and PDF generation.
-- Local write/drain completion is recorded only as implementation progress, never as proof of peer receipt. Application/fiscal success remains `null` until an authoritative RCH response decoder exists.
-- Capture-confirmed framing is separated from `INFERRED` command roles and
-  `UNKNOWN` response/fiscal meanings. Timeout and connection close remain
-  low-confidence archive fallbacks, never fiscal-success markers.
-- There is no test-print command and no replay/store-forward path.
-
-See [RCH protocol assessment](docs/RCH_PROTOCOL_ASSESSMENT.md) and [compatibility gates](docs/COMPATIBILITY.md) before deployment.
-
-## Implemented vertical slice
-
-- Configurable IPv4 listener and printer endpoints.
-- Independent client-to-RCH and RCH-to-client stream pumps.
-- One active upstream session at a time for the configured device endpoint; queued client streams are not consumed by the application until the lock is acquired.
-- Arbitrary-byte preservation across TCP fragmentation/coalescing in the opaque fixture tests; installed-device equality remains gated by C-4.
-- Client and printer half-close handling with bounded response-tail draining.
-- Printer-offline behavior without false positive replies.
-- Directional `.raw` and `.response.raw` capture copies, with completeness and local-write status recorded separately from peer receipt.
-- SHA-256 hashes and a JSON manifest with unknown values represented as `null`/`unknown`.
-- Secure generic-XML candidate inspection using `defusedxml`; DTDs and entities are rejected, and `xml7_confirmed` remains false.
-- Incremental directional framing across arbitrary receive segmentation:
-  `STX | AA | LLL | C | DATA | seq | BCC | ETX`, with bounded recovery and
-  XOR-BCC validation. All 77 complete private-corpus frames validate.
-- Standalone ACK events are preserved separately from the 38 framed printer
-  responses; ACK is never treated as a receipt line or success result.
-- Evidence-labelled commercial/management candidate reconstruction with
-  source frame IDs and offsets. Missing printer-generated fields remain null
-  or absent.
-- Technical TXT that labels `recv()` units as implementation stream chunks,
-  plus a machine-readable JSONL receive timeline with session offsets and
-  per-event hashes.
-- Human TXT and a narrow-roll `PDF_PROXY_RENDERED` sidecar pipeline. Recognized
-  streams render only captured human fields; unsupported/unknown streams
-  remain empty or partial rather than acquiring guessed fiscal data.
-- Atomic `fsync` + replace publication, generated job IDs, symlink rejection, `0750` directories and `0640` files.
-- JSON structured logs suitable for Wazuh ingestion.
-- Hardened non-root systemd service with only `CAP_NET_BIND_SERVICE`.
-- Debian/Ubuntu install, update, uninstall, service, health, config-check, test, and backup scripts.
-- Separate opt-in helper for a persistent secondary IPv4 address; the proxy service itself never receives `CAP_NET_ADMIN`.
+The physical RCH device remains the only fiscal/RT device. The project does
+not emulate fiscal functions and does not treat a valid frame, ACK, local
+socket drain, generated PDF, or parser result as proof of fiscal success.
 
 ## Evidence status
 
-| Area | Status in 0.2.0 |
-|---|---|
-| RCH Ethernet and port 23 | `DOCUMENTED` in official RCH material, including XTools v4.0.0 (07/2026) |
-| Deployment profile string | `OBSERVED` from the supplied request; its semantics remain `UNCONFIRMED` |
-| Private deployed endpoints | `UNCONFIRMED` in the public repository; RFC 5737 placeholders are used instead |
-| Supplied-run TCP sessions | `CONFIRMED` by private capture metadata; this is not an official transport specification |
-| TCP vs UDP as a general device property | `UNKNOWN`; accessible RCH text establishes Ethernet and port 23, not the IP transport |
-| Raw TCP vs Telnet | `UNKNOWN`; IAC is detected only as evidence and never consumed |
-| RCH frame shape and BCC | `CONFIRMED` on 77/77 private-corpus frames; official field names/semantics remain `UNKNOWN` |
-| XML7 in supplied cases | `CONFIRMED` absent; secure generic-XML candidate inspection remains available for other captures |
-| Standalone ACK/NAK | `CONFIRMED`: 39 ACK and zero NAK events in the private corpus; ACK scope and all status/error meanings remain `UNKNOWN` |
-| Document command roles | `INFERRED` from ordered byte/photo correlation; not official RCH semantics |
-| Archive boundary bug | `CONFIRMED`: one-second inactivity split one same-session commercial exchange; corrected by stream-aware pending-state hints, with timeout still a low-confidence fallback |
-| Two supplied photo layouts | Stream-present human fields correlate; printer-generated header/footer/fiscal fields absent from RAW are never invented |
-| Real direct-vs-proxy PCAP | `UNKNOWN`; not performed |
-| Real fiscal-device acceptance | `UNKNOWN`; not performed |
+The supplied private evidence contains exactly **one partial capture job**, not
+four captures: 235 request bytes, 202 response bytes, 10 structurally valid
+request frames, 9 structurally valid response frames, and 10 standalone ACK
+events. It supports one incomplete commercial candidate. It does not contain
+separate byte streams for the photographed command, pre-account, or conforming
+copy. Those three mappings are therefore `NON VERIFICABILE` from bytes.
 
-## Quick start
+Photographs are visual ground truth only. They are never parser input, and
+photo-only merchant, fiscal, product, price, address, device, and timestamp
+values are never injected into output. Private RAW, photographs, endpoints,
+identifiers, values, hashes, and generated private outputs are not committed.
+Public tests use synthetic, checksum-correct fixtures.
 
-After the repository exists remotely:
+See [dump analysis](docs/RCH_DUMP_ANALYSIS.md) and the
+[receipt correlation report](docs/RECEIPT_CORRELATION_REPORT.md) for the exact
+evidence limits.
+
+## Architecture
+
+```text
+management software                         physical RCH device
+        |                                           |
+        +---- opaque bytes --> [ Dumper ] --------->+
+        +<--- opaque bytes ----[ Dumper ] <---------+
+                                |
+                                | atomic filesystem spool only
+                                v
+                    .partial -> fsync -> manifest
+                              -> .ready -> rename
+                                |
+                                v
+                            [ Parser ]
+                                |
+                                v
+                         PHARSED/TXT + PDF
+```
+
+The processes:
+
+- have separate entry points, logs, and systemd units;
+- share no memory and communicate only through `OUTPUT_DIR`;
+- read the same strict `KEY=VALUE` configuration file;
+- can start, stop, fail, and restart independently;
+- do not require the other process to be running;
+- preserve a Parser backlog across process and host restarts.
+
+One data-bearing transport connection produces at most one capture job. It may
+contain zero, one, or several semantic documents; an empty connection produces
+no misleading job. TCP `recv()` calls are timeline observations, never message
+or document boundaries. Full details are in
+[ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Safety properties
+
+- The Dumper does not import the RCH semantic parser or PDF renderer.
+- The Parser has no relay socket and never modifies request RAW, response RAW,
+  timeline, capture manifest, or `.ready`.
+- Forwarded bytes are not decoded, normalized, newline-converted, or
+  re-encoded.
+- Request and response streams remain separate and in directional order.
+- The Dumper never synthesizes ACK, NAK, success, status, or error payloads.
+- `STORAGE_FAILURE_POLICY=continue` prioritizes relay continuity and emits a
+  critical storage error; `abort` is an explicit operator choice.
+- Structured logs use a bounded non-blocking queue; slow log storage does not
+  block the full-duplex pumps, while sustained saturation may drop older
+  operational log records.
+- Parser classification and command roles are evidence-labelled inferences,
+  not authenticated RCH protocol definitions.
+- The Parser service has no IP networking; the Dumper receives only
+  `CAP_NET_BIND_SERVICE` for a privileged listen port.
+
+No live test-print or network replay command is provided. The offline replay
+tool imports RAW into the spool and performs no printer connection.
+
+## Quick start on Debian
+
+Public examples use RFC 5737 documentation addresses. Replace both addresses
+with approved private site values before installation.
 
 ```bash
 git clone https://github.com/okno/commercialRCHproxy.git
 cd commercialRCHproxy
 cp .env.example commercialrchproxy.conf
 nano commercialrchproxy.conf
-sudo apt-get update
-sudo apt-get install -y iputils-arping
-sudo ./scripts/manage_secondary_ip.sh install --config "$PWD/commercialrchproxy.conf"
-sudo ./scripts/manage_secondary_ip.sh check --config "$PWD/commercialrchproxy.conf"
 sudo ./scripts/install.sh --config "$PWD/commercialrchproxy.conf"
 ```
 
-The untracked `commercialrchproxy.conf` must contain the approved private site
-addresses; the repository values below are documentation placeholders only.
-After installation, later edits use:
+If `LISTEN_IP` is not already managed by the host network configuration, use
+the separate, explicit secondary-address helper described in
+[NETWORK_ADDRESS.md](docs/NETWORK_ADDRESS.md). The application installer does
+not change interfaces, routes, firewall rules, or DNS.
 
-```bash
-sudo nano /etc/commercialrchproxy/commercialrchproxy.conf
+The installed configuration remains:
+
+```text
+/etc/commercialrchproxy/commercialrchproxy.conf
 ```
 
-Example shape (replace both addresses):
+Validate and inspect the services without opening a data connection:
+
+```bash
+sudo ./scripts/check_config.sh
+sudo systemctl status commercialrchproxy-dumper.service
+sudo systemctl status commercialrchproxy-parser.service
+sudo journalctl -u commercialrchproxy-dumper.service -u commercialrchproxy-parser.service
+```
+
+The legacy `commercialrchproxy.service` name is a no-op compatibility launcher
+that starts/stops both real units. Operate the two real units directly when
+testing process independence. See [SYSTEMD.md](docs/SYSTEMD.md).
+
+## Shared configuration
+
+The existing `KEY=VALUE` format is retained. Both services load the same file
+and reject duplicate or unknown keys. The public example begins:
 
 ```ini
 LISTEN_IP=192.0.2.231
 LISTEN_PORT=23
 PRINTER_IP=192.0.2.251
 PRINTER_PORT=23
+OUTPUT_DIR=/var/lib/commercialrchproxy/jobs
+LOG_DIR=/var/log/commercialrchproxy
+TIMEZONE=Europe/Rome
 ```
 
-The network helper is explicit and separate from the application installer. It
-adds `LISTEN_IP` as a second IPv4 address on the existing LAN interface; it
-does not create a dummy device. It derives the interface from the local route
-to `PRINTER_IP` and accepts only an existing on-link prefix containing both
-addresses. It never assumes `/24`, changes a route/firewall/DNS setting, or
-connects to port 23. Review the displayed plan and type `INSTALL` only during
-an approved network change window.
+0.3.0 adds durable spool, security, and Parser controls including
+`JOB_CODE_START`, `JOB_CODE_WIDTH`, `PARSER_WORKERS`,
+`PARSER_POLL_INTERVAL_SEC`, `PARSER_RETRY_COUNT`,
+`PARSER_STALE_LOCK_SEC`, and `PARSER_USE_INOTIFY`. Mandatory evidence controls
+(`SAVE_RAW`, `SAVE_TECHNICAL_TXT`, `SAVE_JSON`, `FSYNC_ON_CLOSE`,
+`PRESERVE_TIMELINE`, and `CALCULATE_SHA256`) must remain true.
 
-If the address is already managed persistently by the host's normal network
-manager, the helper is optional; skip its two commands and run the application
-installer directly. See [secondary network address](docs/NETWORK_ADDRESS.md)
-for safety checks, explicit overrides, rollback, and removal. Then:
+See the [configuration reference](docs/CONFIGURATION.md).
 
-```bash
-sudo systemctl restart commercialrchproxy
-sudo ./scripts/healthcheck.sh
-```
-
-The health check does **not** connect to the fiscal device or to the proxy listener. It uses service/socket introspection only. Even an empty connection has not been proven inert for this protocol, so no live connect-probe option is provided.
-
-## Configuration
-
-The shipped example is [.env.example](.env.example). Production uses:
+## Storage and naming
 
 ```text
-/etc/commercialrchproxy/commercialrchproxy.conf
+<OUTPUT_DIR>/<printer>/YYYY/MM/DD/<CODICE_DOC>/
+  file_<seconds>.<9-nanosecond-digits>.raw
+  response_<seconds>.<9-nanosecond-digits>.raw
+  timeline_<seconds>.<9-nanosecond-digits>.jsonl
+  manifest.json
+  .ready
+  PHARSED/
+    <CODICE_DOC>_<C|G>_<HH.MM.SS.mmm>.txt
+    <CODICE_DOC>_<C|G>_<HH.MM.SS.mmm>.pdf
+    parsed.json
+  .parsed
 ```
 
-Important controls:
+The response RAW file is created even when empty. Unix timestamps are limited
+to RAW filenames and technical metadata. Human TXT/PDF names use the configured
+local timezone; exact millisecond collisions gain `_02`, `_03`, and so on.
 
-- `CONNECTION_TIMEOUT_SEC`: upstream connect and write-drain bound, not an RCH application timeout claim.
-- `RESPONSE_TIMEOUT_SEC`: maximum tail drain after one direction ends; calibrate using PCAP.
-- `JOB_IDLE_TIMEOUT_MS`: short archive fallback only. While an observed framed
-  response, candidate document or partial frame remains pending, the recorder
-  extends it by `RESPONSE_TIMEOUT_SEC`; neither interval is an authoritative
-  RCH document boundary.
-- `MAX_PAYLOAD_BYTES`: capture-memory bound. Forwarding continues if exceeded, while the manifest marks the archive incomplete.
-- `SAVE_RAW`, `SAVE_TECHNICAL_TXT`, and `SAVE_JSON` must remain `true`; the
-  directional evidence, receive timeline, and manifest cannot be disabled.
-- `RENDERER_PAPER_WIDTH_MM` and `RENDERER_CHARACTERS_PER_LINE`: provisional brochure-derived PDF settings; verify them on the installed device before any fidelity claim.
-- `RETENTION_DAYS=0`: no automatic deletion. Version 0.2.0 does not schedule retention deletion.
-- `DEBUG_HEXDUMP` and `LOG_PAYLOAD`: both must be true before bounded payload hex enters logs.
-- `DEBUG_PCAP`: reserved configuration flag; packet capture remains an external privileged procedure.
+`CODICE_DOC` is allocated by a persistent, atomic, per-printer local counter.
+No reliable capture field in the supplied evidence can serve as the job key.
+The code is at least four zero-padded decimal digits and continues beyond
+`9999` without destructive rollover.
 
-See [configuration reference](docs/CONFIGURATION.md).
+The intentionally literal directory name is `PHARSED`. See
+[STORAGE_LAYOUT.md](docs/STORAGE_LAYOUT.md).
 
-## Outputs
+## Manual operation
 
-Each fallback-identified job is stored below the configured output root by printer and UTC date:
-
-```text
-jobs/192.0.2.251/YYYY/MM/DD/
-  <timestamp>_<jobid>.raw
-  <timestamp>_<jobid>.response.raw
-  <timestamp>_<jobid>.txt
-  <timestamp>_<jobid>.timeline.jsonl
-  <timestamp>_<jobid>.PULITO.txt
-  <timestamp>_<jobid>.receipt.txt
-  <timestamp>_<jobid>.parsed.json
-  <timestamp>_<jobid>.pdf               # single document or legacy first-document view
-  <timestamp>_<jobid>.document-001.pdf  # authoritative set for multi-document capture
-  <timestamp>_<jobid>.json
-```
-
-- `.raw` is the local copy of bytes received on the management-facing side; `raw_complete=true` means only that the capture segment was not locally truncated.
-- `.response.raw` is the local copy of bytes received on the configured-upstream-facing side; neither file proves end-to-end receipt or fiscal processing.
-- `.txt` is a technical directional transcript and framed-event analysis.
-- `.timeline.jsonl` preserves each copied receive observation with high-precision
-  time, direction, job/session offsets, byte count, per-event hash and local
-  drain state.
-- `.receipt.txt` is the human-readable reconstruction; `.PULITO.txt` is the
-  byte-identical compatibility name. Only fields present in recognized request
-  payloads are rendered.
-- `.parsed.json` contains framed messages, ACK events, issues, evidence-labelled
-  documents, structured candidate fields and their source offsets.
-- proxy PDFs are always labelled `PDF_PROXY_RENDERED`, never official signed
-  RCH documents. One-document captures keep `.pdf`; multi-document captures
-  keep that legacy first-document PDF and also receive one authoritative
-  numbered `.document-NNN.pdf` per reconstructed model.
-- `.json` is the operational manifest: hashes, paths, byte/frame/event counts,
-  inferred document summaries, unknown status fields, boundary source and
-  render/parser errors.
-
-The official, authentication-gated manual hierarchy contains a PaDES-titled chapter, but this does not establish availability, retrieval, transport, or signature validation on the installed device. Only if PADES-1 passes may observed original bytes be archived under a distinct `PDF_RCH_ORIGINAL` path; they must never be rewritten or replaced by the proxy PDF.
-
-See [output formats](docs/OUTPUT_FORMATS.md),
-[capture-confirmed protocol analysis](docs/RCH_PROTOCOL_ANALYSIS.md),
-[stream reassembly](docs/STREAM_REASSEMBLY.md), and
-[receipt parser](docs/RECEIPT_PARSER.md).
-
-## Offline stream inspector
-
-Inspect one saved request (the matching `.response.raw` is selected
-automatically when present):
+Run each component against the same configuration:
 
 ```bash
-python -m commercialrchproxy.tools.inspect_stream /path/to/job.raw --receipt
+commercialrchproxy-dumper --config /etc/commercialrchproxy/commercialrchproxy.conf
+commercialrchproxy-parser --config /etc/commercialrchproxy/commercialrchproxy.conf
 ```
 
-The installed console command is equivalent:
+Useful Parser modes:
 
 ```bash
-commercialrchproxy-inspect /path/to/job.raw --hex --ascii --timeline
+commercialrchproxy-parser --config /etc/commercialrchproxy/commercialrchproxy.conf --once
+commercialrchproxy-parser --config /etc/commercialrchproxy/commercialrchproxy.conf \
+  --job /var/lib/commercialrchproxy/jobs/192.0.2.251/YYYY/MM/DD/0001
 ```
 
-To reconstruct legacy inactivity-split jobs, pass their archive directory. The
-tool reads manifests, verifies referenced RAW hashes, groups only equal
-`session_id` values, and concatenates directional segments in manifest time
-order. It never merges the four distinct display sessions merely because their
-bytes or timestamps are similar.
+Linux inotify is a wake-up optimization. A complete deterministic spool scan
+always runs and periodic polling remains the correctness fallback.
+
+## Offline tools
+
+Inspect a RAW file or archive directory:
 
 ```bash
-commercialrchproxy-inspect /var/lib/commercialrchproxy/jobs \
-  --output-dir /var/lib/commercialrchproxy/reconstructed
+commercialrchproxy-inspect-dump /protected/path/file.raw --receipt --json
+commercialrchproxy-inspect-dump /protected/archive --output-dir /protected/reconstruction
 ```
 
-Each reconstructed document directory contains
-`raw.bin` (client-direction compatibility alias),
-`raw_client_to_printer.bin`, `raw_printer_to_client.bin`, `parsed.json`,
-`receipt.txt`, `metadata.json`, and `raw_event_log.txt`. The directional raw
-files cover the complete grouped session; the document metadata supplies its
-frame IDs and byte range. Path references from manifests are containment-
-checked and an existing reconstruction directory is never silently overwritten.
+Import directional RAW into the spool without network activity:
 
-Additional flags are `--response` (repeatable), `--hex`, `--ascii`, `--xml`,
-`--timeline`, `--json`, `--receipt`, `--max-display-bytes`,
-`--max-input-bytes`, and `--max-total-input-bytes`. The last two bound each
-direction/session and the complete offline run respectively. `--json` produces
-the full machine-readable session analysis. Inspector output contains sensitive
-transaction evidence; use a protected destination and do not commit real
-reconstructions.
+```bash
+commercialrchproxy-replay /protected/path/request.raw \
+  --response /protected/path/response.raw \
+  --config /etc/commercialrchproxy/commercialrchproxy.conf
+```
+
+Reparse an immutable ready job. Existing `PHARSED` output is never silently
+overwritten:
+
+```bash
+commercialrchproxy-reparse /var/lib/commercialrchproxy/jobs/192.0.2.251/YYYY/MM/DD/0001 \
+  --config /etc/commercialrchproxy/commercialrchproxy.conf --dry-run --code 0001
+
+commercialrchproxy-reparse /var/lib/commercialrchproxy/jobs/192.0.2.251/YYYY/MM/DD/0001 \
+  --config /etc/commercialrchproxy/commercialrchproxy.conf --backup-existing --code 0001
+```
+
+`replay` means offline spool import, never transmission to a printer. See
+[MIGRATION.md](docs/MIGRATION.md) before using old 0.2 archives.
+
+## Parser output and evidence labels
+
+The primary type is:
+
+- `C`: commercial-document candidate;
+- `G`: management-document candidate.
+
+Supported management subtype candidates are `COMANDA`, `PRECONTO`,
+`COPIA CONFORME`, and `DOCUMENTO GESTIONALE GENERICO`. Commercial output uses
+`DOCUMENTO COMMERCIALE`. These labels are conservative parser classifications;
+they do not assert fiscal validity.
+
+Every TXT/PDF begins with an explicit parser-metadata section and contains only
+captured human-readable fields plus clearly labelled inferred presentation.
+Missing merchant headers, VAT details, payment methods, fiscal identifiers,
+and printer-generated footer fields remain absent rather than being copied
+from photographs.
 
 ## Tests
 
@@ -263,79 +260,44 @@ reconstructions.
 ./scripts/run_tests.sh
 ```
 
-The network fixture server remains an opaque TCP behavior fixture; it does not
-emulate RCH and cannot satisfy NET-2 or C-4. Tests cover arbitrary-byte relay
-equality, reverse-channel equality, fragmentation, delayed replies,
-half-close, persistent sessions, offline behavior, XML hardening, hashing,
-atomic storage and rendering.
+The suite covers configuration, byte-for-byte relay behavior, half-close and
+slow streams, durable spool publication, persistent counters, Parser locking,
+stale recovery, hash rejection, idempotency, process independence, framing
+across arbitrary segmentation, document-state isolation, C/G/subtype
+classification, TXT/PDF naming, and offline tools.
 
-The protocol suite additionally covers:
+It uses a synthetic network peer and sanitized protocol fixtures. It does not
+constitute a direct-versus-proxy PCAP comparison or physical RCH acceptance.
+Current verified counts and platform-specific results are recorded only after
+the final run in [TEST_REPORT.md](docs/TEST_REPORT.md).
 
-- the sanitized 77-frame/39-ACK corpus shape and XOR BCC;
-- whole-stream, one-byte, seven-byte and deterministic-random segmentation;
-- malformed header/terminator, oversize, truncation and BCC mismatch recovery;
-- commercial and management golden receipt/JSON reconstruction;
-- auxiliary-display exclusion and unknown-command retention;
-- two documents in one stream and incomplete-document preservation;
-- ordinal ACK/response association and sequence-mismatch reporting;
-- delayed framed response across an idle gap and explicit late orphan capture;
-- inspector JSON, per-document forensic output and same-session legacy-part
-  reassembly.
+## Update, migration, and rollback
 
-No real RCH payload, photograph or private hash is committed. Public protocol
-fixtures use synthetic literals, preserve the observed framing/order/counts,
-and recompute every BCC. The real corpus is validated only in a protected local
-run; command/document roles remain `INFERRED` even when golden tests pass. See
-[the sanitized-corpus note](tests/fixtures/rch_synthetic_corpus.README.md).
+Read [MIGRATION.md](docs/MIGRATION.md) before upgrading from 0.2.x. The storage
+contract and service topology changed in 0.3.0. Preserve a protected backup of
+the installed configuration, application, spool, and logs before activation.
 
-## Packet-capture acceptance gate
+An application rollback does not reverse-migrate 0.3 spool jobs. Never replay
+captured fiscal traffic automatically. During an operational rollback, stop
+the Dumper, restore the management software's approved direct-device target,
+and validate direct operation under the site's fiscal procedure.
 
-The critical next step is a passive direct baseline while the management software communicates with the physical Print! F:
+Known residual limits are explicit in
+[KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 
-```bash
-sudo tcpdump -i <interface> -s 0 -nn \
-  -w rch-direct.pcap 'host 192.0.2.251'
-```
+## Documentation map
 
-Only after the direct capture satisfies NET-2 by observing TCP, and proxy insertion is approved, capture both legs:
-
-```bash
-sudo tcpdump -i <interface> -s 0 -nn \
-  -w rch-proxy.pcap '(host 192.0.2.231 or host 192.0.2.251)'
-```
-
-Start with the generic IP capture above, determine the IP transport from packet headers, and use TCP-specific reconstruction only if TCP is actually observed. Exercise ordinary successful operations and naturally occurring errors; induce an error only through a dealer-approved, non-destructive workflow. Do not commit real PCAPs. They can contain commercial or personal data. Follow [the packet-capture runbook](docs/PACKET_CAPTURE.md), anonymize fixtures structurally, and update protocol logic only from `DOCUMENTED` or repeatable `OBSERVED` evidence.
-
-## Update
-
-```bash
-cd commercialRCHproxy
-sudo ./scripts/update.sh
-```
-
-The script backs up the installed configuration/application, requires a fast-forward Git update, installs dependencies, runs tests, restarts, and health-checks. See [update procedure](docs/UPDATE.md).
-
-## Uninstall
-
-```bash
-sudo ./scripts/uninstall.sh
-```
-
-The default removal preserves archived jobs, configuration, and logs. Destructive removal is explicit and interactive:
-
-```bash
-sudo ./scripts/uninstall.sh --purge
-```
-
-If the optional secondary-address service was installed, remove it separately
-with `sudo ./scripts/manage_secondary_ip.sh uninstall`. Application purge
-refuses while that service still depends on `/etc/commercialrchproxy`.
-
-See [uninstall behavior](docs/UNINSTALL.md).
-
-## Repository separation
-
-This project is independent from [`okno/printproxy`](https://github.com/okno/printproxy). Generic duplex and durability design ideas were reviewed, but its POS80BL/ESC-POS protocol and rendering logic were not copied. See [printproxy audit](docs/PRINTPROXY_AUDIT.md).
+- [Architecture](docs/ARCHITECTURE.md)
+- [Storage contract](docs/STORAGE_LAYOUT.md)
+- [Configuration](docs/CONFIGURATION.md)
+- [Dump analysis](docs/RCH_DUMP_ANALYSIS.md)
+- [Protocol findings](docs/RCH_PROTOCOL_FINDINGS.md)
+- [Parser state machine](docs/PARSER_STATE_MACHINE.md)
+- [Receipt/photo correlation](docs/RECEIPT_CORRELATION_REPORT.md)
+- [Migration and rollback](docs/MIGRATION.md)
+- [Known limitations](docs/KNOWN_LIMITATIONS.md)
+- [Test report](docs/TEST_REPORT.md)
+- [systemd operation](docs/SYSTEMD.md)
 
 ## License
 

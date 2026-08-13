@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from ipaddress import ip_address
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 DEFAULT_CONFIG_PATH = Path("/etc/commercialrchproxy/commercialrchproxy.conf")
+MAX_CAPTURE_EVENTS_UPPER_BOUND = 100_000
 
 
 class ConfigError(ValueError):
@@ -47,6 +50,28 @@ def _parse_float(value: str, name: str, minimum: float, maximum: float) -> float
     if not math.isfinite(result) or not minimum <= result <= maximum:
         raise ConfigError(f"{name} must be between {minimum} and {maximum}")
     return result
+
+
+def _parse_mode(value: str, name: str, *, directory: bool) -> int:
+    if not re.fullmatch(r"0?[0-7]{3}", value):
+        raise ConfigError(f"{name} must be an octal mode such as 0640 or 0750")
+    result = int(value, 8)
+    required = 0o700 if directory else 0o600
+    if result & required != required:
+        raise ConfigError(f"{name} must grant owner read/write{'/execute' if directory else ''} access")
+    if result & 0o007:
+        raise ConfigError(f"{name} must not grant permissions to other users")
+    if not directory and result & 0o111:
+        raise ConfigError(f"{name} must not make captured files executable")
+    return result
+
+
+def _parse_identity(value: str, name: str) -> str:
+    if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", value):
+        raise ConfigError(f"{name} must be a conservative Unix account name")
+    if value == "root":
+        raise ConfigError(f"{name} must not be root")
+    return value
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
@@ -84,9 +109,32 @@ class Config:
     printer_port: int = 23
     output_dir: Path = Path("/var/lib/commercialrchproxy/jobs")
     log_dir: Path = Path("/var/log/commercialrchproxy")
+    timezone: str = "Europe/Rome"
+    config_version: str = "1"
     connection_timeout_sec: float = 30.0
     response_timeout_sec: float = 10.0
     job_idle_timeout_ms: int = 1000
+    buffer_size: int = 65_536
+    max_connections: int = 32
+    printer_connect_attempts: int = 1
+    printer_connect_retry_delay_sec: float = 1.0
+    storage_failure_policy: str = "continue"
+    job_code_start: int = 1
+    job_code_width: int = 4
+    pharsed_dirname: str = "PHARSED"
+    file_mode: int = 0o640
+    directory_mode: int = 0o750
+    service_user: str = "commercialrchproxy"
+    service_group: str = "commercialrchproxy"
+    fsync_on_close: bool = True
+    preserve_timeline: bool = True
+    calculate_sha256: bool = True
+    max_capture_events: int = 65_536
+    parser_workers: int = 2
+    parser_poll_interval_sec: float = 5.0
+    parser_retry_count: int = 3
+    parser_stale_lock_sec: float = 300.0
+    parser_use_inotify: bool = True
     save_raw: bool = True
     save_technical_txt: bool = True
     save_clean_txt: bool = True
@@ -160,6 +208,21 @@ class Config:
         if listen_ip == printer_ip and listen_port == printer_port:
             raise ConfigError("Proxy and printer endpoints must not be identical")
 
+        timezone = value("TIMEZONE", "Europe/Rome")
+        try:
+            ZoneInfo(timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ConfigError(f"TIMEZONE is not available: {timezone!r}") from exc
+        config_version = value("CONFIG_VERSION", "1")
+        if config_version != "1":
+            raise ConfigError(f"Unsupported CONFIG_VERSION: {config_version!r}")
+        storage_failure_policy = value("STORAGE_FAILURE_POLICY", "continue").lower()
+        if storage_failure_policy not in {"continue", "abort"}:
+            raise ConfigError("STORAGE_FAILURE_POLICY must be continue or abort")
+        pharsed_dirname = value("PHARSED_DIRNAME", "PHARSED")
+        if pharsed_dirname != "PHARSED":
+            raise ConfigError("PHARSED_DIRNAME must remain the literal PHARSED")
+
         result = cls(
             listen_ip=listen_ip,
             listen_port=listen_port,
@@ -167,6 +230,8 @@ class Config:
             printer_port=printer_port,
             output_dir=Path(value("OUTPUT_DIR", "/var/lib/commercialrchproxy/jobs")),
             log_dir=Path(value("LOG_DIR", "/var/log/commercialrchproxy")),
+            timezone=timezone,
+            config_version=config_version,
             connection_timeout_sec=_parse_float(
                 value("CONNECTION_TIMEOUT_SEC", "30"), "CONNECTION_TIMEOUT_SEC", 0.05, 3600.0
             ),
@@ -174,6 +239,43 @@ class Config:
                 value("RESPONSE_TIMEOUT_SEC", "10"), "RESPONSE_TIMEOUT_SEC", 0.05, 3600.0
             ),
             job_idle_timeout_ms=_parse_int(value("JOB_IDLE_TIMEOUT_MS", "1000"), "JOB_IDLE_TIMEOUT_MS", 50, 86_400_000),
+            buffer_size=_parse_int(value("BUFFER_SIZE", "65536"), "BUFFER_SIZE", 512, 4_194_304),
+            max_connections=_parse_int(value("MAX_CONNECTIONS", "32"), "MAX_CONNECTIONS", 1, 4096),
+            printer_connect_attempts=_parse_int(
+                value("PRINTER_CONNECT_ATTEMPTS", "1"), "PRINTER_CONNECT_ATTEMPTS", 1, 100
+            ),
+            printer_connect_retry_delay_sec=_parse_float(
+                value("PRINTER_CONNECT_RETRY_DELAY_SEC", "1"),
+                "PRINTER_CONNECT_RETRY_DELAY_SEC",
+                0.0,
+                3600.0,
+            ),
+            storage_failure_policy=storage_failure_policy,
+            job_code_start=_parse_int(value("JOB_CODE_START", "1"), "JOB_CODE_START", 0, 9_999_999_999_999),
+            job_code_width=_parse_int(value("JOB_CODE_WIDTH", "4"), "JOB_CODE_WIDTH", 4, 32),
+            pharsed_dirname=pharsed_dirname,
+            file_mode=_parse_mode(value("FILE_MODE", "0640"), "FILE_MODE", directory=False),
+            directory_mode=_parse_mode(value("DIRECTORY_MODE", "0750"), "DIRECTORY_MODE", directory=True),
+            service_user=_parse_identity(value("SERVICE_USER", "commercialrchproxy"), "SERVICE_USER"),
+            service_group=_parse_identity(value("SERVICE_GROUP", "commercialrchproxy"), "SERVICE_GROUP"),
+            fsync_on_close=_parse_bool(value("FSYNC_ON_CLOSE", "true"), "FSYNC_ON_CLOSE"),
+            preserve_timeline=_parse_bool(value("PRESERVE_TIMELINE", "true"), "PRESERVE_TIMELINE"),
+            calculate_sha256=_parse_bool(value("CALCULATE_SHA256", "true"), "CALCULATE_SHA256"),
+            max_capture_events=_parse_int(
+                value("MAX_CAPTURE_EVENTS", "65536"),
+                "MAX_CAPTURE_EVENTS",
+                1,
+                MAX_CAPTURE_EVENTS_UPPER_BOUND,
+            ),
+            parser_workers=_parse_int(value("PARSER_WORKERS", "2"), "PARSER_WORKERS", 1, 64),
+            parser_poll_interval_sec=_parse_float(
+                value("PARSER_POLL_INTERVAL_SEC", "5"), "PARSER_POLL_INTERVAL_SEC", 0.1, 3600.0
+            ),
+            parser_retry_count=_parse_int(value("PARSER_RETRY_COUNT", "3"), "PARSER_RETRY_COUNT", 0, 100),
+            parser_stale_lock_sec=_parse_float(
+                value("PARSER_STALE_LOCK_SEC", "300"), "PARSER_STALE_LOCK_SEC", 1.0, 86_400.0
+            ),
+            parser_use_inotify=_parse_bool(value("PARSER_USE_INOTIFY", "true"), "PARSER_USE_INOTIFY"),
             save_raw=_parse_bool(value("SAVE_RAW", "true"), "SAVE_RAW"),
             save_technical_txt=_parse_bool(value("SAVE_TECHNICAL_TXT", "true"), "SAVE_TECHNICAL_TXT"),
             save_clean_txt=_parse_bool(value("SAVE_CLEAN_TXT", "true"), "SAVE_CLEAN_TXT"),
@@ -214,6 +316,12 @@ class Config:
             raise ConfigError("SAVE_RAW must remain true because immutable directional evidence is mandatory")
         if not result.save_technical_txt:
             raise ConfigError("SAVE_TECHNICAL_TXT must remain true because the receive timeline is mandatory")
+        if not result.fsync_on_close:
+            raise ConfigError("FSYNC_ON_CLOSE must remain true because spool publication is durability-gated")
+        if not result.preserve_timeline:
+            raise ConfigError("PRESERVE_TIMELINE must remain true because the receive timeline is mandatory")
+        if not result.calculate_sha256:
+            raise ConfigError("CALCULATE_SHA256 must remain true because capture hashes are mandatory")
         return result
 
     def redacted_dict(self) -> dict[str, object]:
@@ -227,9 +335,32 @@ _KEYS = {
     "PRINTER_PORT",
     "OUTPUT_DIR",
     "LOG_DIR",
+    "TIMEZONE",
+    "CONFIG_VERSION",
     "CONNECTION_TIMEOUT_SEC",
     "RESPONSE_TIMEOUT_SEC",
     "JOB_IDLE_TIMEOUT_MS",
+    "BUFFER_SIZE",
+    "MAX_CONNECTIONS",
+    "PRINTER_CONNECT_ATTEMPTS",
+    "PRINTER_CONNECT_RETRY_DELAY_SEC",
+    "STORAGE_FAILURE_POLICY",
+    "JOB_CODE_START",
+    "JOB_CODE_WIDTH",
+    "PHARSED_DIRNAME",
+    "FILE_MODE",
+    "DIRECTORY_MODE",
+    "SERVICE_USER",
+    "SERVICE_GROUP",
+    "FSYNC_ON_CLOSE",
+    "PRESERVE_TIMELINE",
+    "CALCULATE_SHA256",
+    "MAX_CAPTURE_EVENTS",
+    "PARSER_WORKERS",
+    "PARSER_POLL_INTERVAL_SEC",
+    "PARSER_RETRY_COUNT",
+    "PARSER_STALE_LOCK_SEC",
+    "PARSER_USE_INOTIFY",
     "SAVE_RAW",
     "SAVE_TECHNICAL_TXT",
     "SAVE_CLEAN_TXT",

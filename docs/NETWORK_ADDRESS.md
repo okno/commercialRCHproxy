@@ -89,11 +89,13 @@ Installation creates:
   endpoints and approved interface identity;
 - `/usr/local/libexec/commercialrchproxy-network/manage_secondary_ip.sh`;
 - `/etc/systemd/system/commercialrchproxy-secondary-ip.service`;
-- `/etc/systemd/system/commercialrchproxy.service.d/10-secondary-ip.conf`.
+- `/etc/systemd/system/commercialrchproxy-dumper.service.d/10-secondary-ip.conf`.
 
-The separate oneshot unit runs before and is bound to the application service.
+The separate oneshot unit runs before and is bound only to the Dumper service.
 It has `CAP_NET_ADMIN` and `CAP_NET_RAW` in its own bounding set. The non-root
-proxy service retains only `CAP_NET_BIND_SERVICE`.
+Dumper retains only `CAP_NET_BIND_SERVICE`; the independent Parser receives no
+network capability and does not depend on the secondary-address unit. An
+existing managed v0.2 legacy-service drop-in is migrated conservatively.
 
 At each activation, the helper revalidates the route, prefix, interface name,
 and interface index. Runtime ownership is recorded root-only below
@@ -119,7 +121,7 @@ To remove the optional service:
 sudo ./scripts/manage_secondary_ip.sh uninstall
 ```
 
-Type exactly `UNINSTALL`. The command first stops the dependent application,
+Type exactly `UNINSTALL`. The command first stops the dependent Dumper,
 then deletes only the exact helper-owned address if interface identity and
 runtime state still match. It refuses uncertain/malformed state instead of
 guessing. A borrowed address remains in place. Application uninstall/purge

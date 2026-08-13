@@ -91,3 +91,16 @@ def test_provisional_renderer_parameters_are_bounded(tmp_path: Path, key: str, v
                 key: value,
             }
         )
+
+
+def test_capture_event_limit_matches_parser_safety_bound(tmp_path: Path) -> None:
+    common = {
+        "OUTPUT_DIR": str((tmp_path / "jobs").resolve()),
+        "LOG_DIR": str((tmp_path / "logs").resolve()),
+    }
+
+    accepted = Config.from_mapping({**common, "MAX_CAPTURE_EVENTS": "100000"})
+    assert accepted.max_capture_events == 100_000
+
+    with pytest.raises(ConfigError, match="MAX_CAPTURE_EVENTS must be between 1 and 100000"):
+        Config.from_mapping({**common, "MAX_CAPTURE_EVENTS": "100001"})

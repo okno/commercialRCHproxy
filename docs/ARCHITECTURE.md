@@ -1,163 +1,258 @@
 # Architecture
 
-## Scope
+## Scope and trust boundary
 
-`commercialRCHproxy` currently terminates two separate TCP connections and is designed to copy application bytes between them. TCP is an `UNCONFIRMED` implementation hypothesis for the installed Print! F pending NET-2. Application-byte transparency is likewise an acceptance target pending the direct-versus-proxy C-4 comparison, not a production claim. The design can never be a layer-2/3 transparent bridge: source IPs, packet metadata, packet boundaries, and timing necessarily change.
+Version 0.3.0 is a two-process design:
 
-The physical RCH Print! F remains the only fiscal/RT device. The proxy cannot declare a document valid, memorized, transmitted, or printed without a documented/observed RCH response interpretation.
+1. **Dumper**: network relay, directional RAW acquisition, timeline capture,
+   durable job publication, and no semantic receipt work.
+2. **Parser**: offline validation, framing, document-state reconstruction,
+   classification, TXT/PDF rendering, and no relay socket.
 
-## Data path
+They run in separate operating-system processes, share no memory, and read the
+same strict configuration. Their only coordination channel is the persistent
+filesystem below `OUTPUT_DIR`.
 
-```text
-                     passive copies only
-                  +------------------------+
-                  | capture/job coordinator|
-                  +------------+-----------+
-                               |
-Gestionale --implemented TCP--> pump C->RCH +--implemented TCP--> RCH Print! F
-Gestionale <--implemented TCP-- pump RCH->C +<--implemented TCP-- RCH Print! F
-                               |
-                        background archive
-                         RAW/TXT/PDF/JSON
-```
+The physical RCH device remains the only fiscal/RT device. A parser result is a
+forensic reconstruction candidate, not an assertion that a document was
+accepted, printed, memorized, signed, or transmitted.
 
-The two pumps are independent coroutines. Each opaque `writer.write()` is
-queued before bounded capture/boundary-hint bookkeeping; captured data is
-never transformed and fed back into the relay path. Generic-XML inspection,
-semantic reconstruction, hashing, disk publication, and rendering run outside
-the forwarding pump.
-
-Implementation receive-call boundaries are never treated as RCH frames or protocol evidence.
-
-## Connection lifecycle
-
-1. Accept the management connection.
-2. Open the configured printer endpoint before reading application payload.
-3. Start both opaque pumps.
-4. On EOF in one direction, attempt `write_eof()` toward the other endpoint.
-5. Keep the opposite direction alive for `RESPONSE_TIMEOUT_SEC` so a late tail response can return.
-6. Close both writers and finalize any active capture copy.
-
-If the printer connection fails, the client is closed/reset without a generated payload. The proxy does not send `OK`, ACK, NAK, or a fiscal error substitute.
-
-`RESPONSE_TIMEOUT_SEC` is an operational bound, not a protocol fact. It must be calibrated from direct captures; a value that is too low can truncate late responses, while an unbounded value can pin sessions indefinitely.
-
-An in-process exclusive lock permits only one active upstream connection to the configured device endpoint. Additional accepted clients wait without application-level stream consumption until the active upstream session closes. This limits accidental concurrent fiscal-device sessions; it is not an authorization boundary, so network ACLs remain required.
-
-## Capture and job fallback
-
-An active capture records local observations:
-
-- client-side bytes received by the relay, up to `MAX_PAYLOAD_BYTES`;
-- configured-upstream-side bytes received by the relay, within the same bound;
-- wall-clock/monotonic timestamp, direction, ordered event number, job offset
-  and session-relative directional offset for each copied chunk.
-
-Receive-event metadata has a hard count ceiling. Crossing it leaves the
-directional RAW intact, marks `timeline_complete=false`, and records why the
-JSONL timeline is partial.
-
-A completed local writer drain is not proof that the peer application accepted, processed, printed, or persisted the bytes. End-to-end byte delivery remains `UNCONFIRMED` until PCAP comparison and application/physical acceptance pass C-4.
-
-No authenticated protocol-native document boundary is known. Capture-confirmed
-envelopes and inferred lifecycle hints now prevent the known one-second split:
-
-- keeps an incremental directional envelope tracker across receive chunks;
-- tracks pending framed responses by the sequence relationship observed in the
-  private corpus; standalone ACK does not complete that queue;
-- tracks a lightweight commercial/management candidate and any partial frame;
-- accepts only BCC-valid observed `00/z` request and `01/N` response profiles
-  for those non-authoritative hints;
-- bounds hint queues/history and skips hint parsing for oversized read chunks;
-- uses the short `JOB_IDLE_TIMEOUT_MS` only when none of those states is pending;
-- otherwise waits `RESPONSE_TIMEOUT_SEC + JOB_IDLE_TIMEOUT_MS`;
-- finalizes any remaining copy at connection close.
-
-Normal fallback manifests remain `fallback_inactivity` or
-`fallback_connection_close` with confidence at or below `0.20`. A response
-that arrives only after an already-published timeout segment is preserved in
-an `orphan_late_response` segment with confidence `0.10`. These are storage
-boundaries, not fiscal conclusions. Tracker failure is fail-open for opaque
-forwarding and capture.
-
-## Passive protocol intelligence
-
-The passive analyzer has four independent results:
-
-- implementation transport: TCP stream, with detected installed-device transport `null` and evidence `UNCONFIRMED` pending NET-2;
-- framing: capture-confirmed delimiter, decimal data length, sequence position
-  and XOR BCC, with exact frame/issue offsets;
-- standalone `0x06` ACK events separate from framed printer responses;
-- secure generic-XML candidate copy: candidate offsets, generic well-formedness, literal root QName/local name and leaf paths, with `xml7_confirmed=false`;
-- evidence-labelled receipt reconstruction: `document_type` is an `INFERRED`
-  command-sequence classification (`commerciale` or `gestionale`) only when a
-  correlated observed lifecycle is present; unknown streams remain null.
-
-The response analyzer still returns application success, printer status and
-protocol/error meaning as null. The official command/error dictionaries remain
-empty; receipt roles are isolated reverse-engineering rules, not official RCH
-definitions.
-
-Live semantic reconstruction operates on each archived fallback job. The
-session-scoped recorder hints prevent the observed 1.37-second split, while
-the offline inspector groups immutable jobs by exact `session_id` when a
-document still spans an extended fallback boundary.
-
-## Intermediate document model
+## Data flow
 
 ```text
-directional request/response copies
-        |
-        +--> incremental framing + ACK events + issues
-        |
-        +--> inferred command/document state (request only)
-        |              |
-        |         DocumentModel(s)
-        |          /      |       \
-        |   receipt.txt parsed.json PDF_PROXY_RENDERED
-        |
-        `--> response events/metadata (never receipt body)
+                                forwarding priority
+ management software                                         physical device
+          |                                                         |
+          | request bytes                                           |
+          +---------------> Dumper request pump -------------------->+
+          |                                                         |
+          | response bytes                                          |
+          +<--------------- Dumper response pump <------------------+
+                                    |
+                                    | append-only directional copy
+                                    v
+                          hidden .partial job directory
+                                    |
+                   fsync files -> hashes -> manifest -> .ready
+                                    |
+                         atomic directory rename/fsync
+                                    v
+                         persistent immutable spool
+                                    |
+                     inotify wake-up and/or polling scan
+                                    v
+                                 Parser
+                                    |
+                        PHARSED/TXT, PDF, parsed.json
 ```
 
-`DocumentModel` supports trace fields for byte offset, frame number and XML
-path. Recognized observed command families populate only literal fields present
-in request `DATA`; every semantic role is `INFERRED`. Unsupported streams stay
-empty, and absent tax, payment, merchant, date, counter or fiscal fields are
-never created. Photos validate captured values but never supply model data.
+The two relay pumps are independent. Each writes received bytes to the
+opposite socket in order and records the same directional bytes. Parser code is
+not imported into the Dumper process. The Parser neither imports nor invokes
+the proxy server and the installed Parser unit is denied IP networking.
 
-## Storage
+## Process independence
 
-Artifacts are written to a random same-directory temporary name, flushed with
-`fsync`, chmodded, and atomically replaced. The containing directory is also
-flushed where supported. Application-controlled directory levels reject
-symlinks. Directional RAW and the JSONL receive timeline are attempted before
-semantic parsing; parsed JSON, human text and PDF are derived sidecars. The
-manifest JSON is written last so its presence means sidecar publication was
-attempted and its `render_errors` list is authoritative.
+| Condition | Dumper behavior | Parser behavior |
+|---|---|---|
+| Parser stopped | Relay and completed spool publication continue | Backlog remains on disk |
+| Parser restarted | No relay action | Deterministic scan consumes old `.ready` jobs |
+| Parser render failure | Unaffected | Retry state is recorded; capture evidence remains immutable |
+| Dumper stopped | No new relay/capture | Existing ready backlog can still be processed |
+| Host restart | Hidden incomplete jobs remain non-ready | Ready jobs are rediscovered; stale claims are recoverable |
+| Disk/storage error, default policy | Relay is prioritized; critical error logged | No job exists unless atomic publication completed |
 
-`MAX_PAYLOAD_BYTES` prevents unbounded capture memory. Forwarding continues if
-the cap is crossed, but `raw_complete=false`, `status=capture_incomplete`, and
-the error are recorded. A separate capture-event ceiling bounds timeline
-objects. Semantic analysis has lower byte/event/message/issue/document caps so
-hostile input falls back to partial diagnostics without changing RAW. A
-partial RAW must never be presented as byte-complete evidence.
+`commercialrchproxy-dumper.service` and
+`commercialrchproxy-parser.service` have no `Requires`, `Wants`, `After`, or
+`Before` relationship to each other. The compatibility
+`commercialrchproxy.service` unit is only an operator convenience that starts
+both; it is not an inter-process dependency.
 
-## Failure isolation
+## Dumper responsibilities
 
-- Parser failure: do not intentionally alter the relay path; record parser/render error if storage remains available. Installed-device byte equality remains subject to C-4.
-- TXT/PDF failure: forward unchanged; publish other artifacts and manifest error.
-- Capture limit: forward unchanged; explicitly mark partial archive.
-- Disk/archive failure: forward unchanged when transport is still viable; emit structured `capture_segment_archive_failed`.
-- Printer connect failure: no false response; structured `printer_unreachable`.
-- Reverse channel failure: no false application success.
+The Dumper:
+
+- accepts one configured management-facing TCP connection and opens one
+  configured device-facing TCP connection per session;
+- relays both directions without payload interpretation or conversion;
+- preserves byte order and propagates half-close where supported;
+- applies socket backpressure through writer/drain handling;
+- records receive, forwarding, and local drain timestamps without asserting
+  remote receipt;
+- creates at most one capture job per data-bearing transport connection; an
+  empty connection produces no job;
+- publishes request RAW, response RAW (including a deterministic empty file),
+  JSONL timeline, manifest, and `.ready` atomically;
+- never creates receipt TXT/PDF and never waits for the Parser.
+
+It does not treat a `recv()` call, TCP packet, idle pause, frame, ACK, or
+candidate document close as a capture-directory boundary. The transport
+connection lifecycle is the capture boundary. A capture job may later produce
+zero, one, or multiple semantic documents.
+
+Forwarding cannot prove remote delivery: successful local `drain()` means only
+that the local runtime accepted progress. Arrival, device processing, paper
+printing, and fiscal status remain unknown without independent evidence.
+
+## Capture memory and storage failure
+
+`MAX_PAYLOAD_BYTES` bounds the combined retained capture. Timeline metadata is
+separately bounded by `MAX_CAPTURE_EVENTS`. When a limit or storage operation
+fails, the manifest/partial state must not be represented as complete.
+
+`STORAGE_FAILURE_POLICY` is explicit:
+
+- `continue` (default): prioritize the live relay and emit a critical structured
+  log. The remaining or failed partial directory is never promoted to ready.
+- `abort`: surface the storage failure to the session after best-effort
+  preservation. This policy can interrupt the connection and therefore
+  requires site approval.
+
+Neither policy permits truncated bytes to be presented as complete evidence.
+
+## Atomic spool protocol
+
+For each connection the Dumper:
+
+1. allocates a persistent per-printer `CODICE_DOC` under a cross-process lock;
+2. creates a hidden, unique `.<code>.<job-id>.partial` directory;
+3. writes request, response, and timeline `.partial` files;
+4. flushes and `fsync`s file contents;
+5. renames artifacts to final names inside the hidden directory;
+6. calculates SHA-256 and writes `manifest.json` atomically;
+7. writes `.ready`, binding the code and manifest SHA-256;
+8. `fsync`s the directory;
+9. atomically renames the hidden directory to `<CODICE_DOC>`;
+10. `fsync`s the date parent.
+
+The Parser rejects a job if it lacks `.ready`, contains a `.partial` artifact,
+has an invalid manifest binding, has an unsafe/symlink path, or has a mismatched
+RAW/timeline hash. Abandoned hidden partial directories are preserved for
+operator inspection and are never auto-promoted.
+
+See [STORAGE_LAYOUT.md](STORAGE_LAYOUT.md) for the file contract.
+
+## CODICE_DOC strategy
+
+No reliable protocol field in the supplied capture was proven suitable as a
+globally unique job-directory key. Version 0.3.0 therefore uses a local
+allocator:
+
+- state is separated by sanitized printer identifier;
+- `next-code` is durable and atomically replaced;
+- `next-code.lock` serializes processes;
+- `JOB_CODE_START` selects the first value;
+- `JOB_CODE_WIDTH` is a minimum display width of at least four digits;
+- codes continue as five or more digits after `9999`; there is no destructive
+  rollover;
+- an existing destination is never overwritten.
+
+Handwritten photo labels and printer-visible document numbers are never used
+as `CODICE_DOC`.
+
+## Parser pipeline
+
+```text
+ready capture
+  -> commit/hash/path validation
+  -> complete directional byte streams
+  -> incremental STX/ETX framing and standalone ACK extraction
+  -> inferred request/response correlation
+  -> inferred document state machines
+  -> independent DocumentModel per candidate
+  -> C/G and subtype classification
+  -> human TXT and matching receipt-style PDF
+  -> PHARSED/parsed.json
+  -> atomic .parsed marker
+```
+
+Framing is segmentation-independent: the same byte stream must produce the
+same result when fed whole, byte-by-byte, or in arbitrary chunks. A `recv()`
+record remains technical timeline evidence only.
+
+Classification is evidence-gated:
+
+- `C` is an inferred commercial command lifecycle;
+- `G` is an inferred management lifecycle;
+- management subtypes use observed literal markers and/or same-stream
+  structural relationships;
+- a management document is considered a conforming-copy candidate only when
+  it follows a separate commercial candidate and its captured item/total
+  signature matches with supporting payment/tax content, or a corresponding
+  literal marker is captured;
+- price or total presence alone never makes a document `C`.
+
+Every opener creates a fresh model. Finishing or abandoning a candidate clears
+the active builder before the next opener, preventing values from leaking
+between pre-account, commercial, and conforming-copy candidates.
+
+The detailed inferred transitions are in
+[PARSER_STATE_MACHINE.md](PARSER_STATE_MACHINE.md).
+
+## Parser claims, retries, and recovery
+
+Ready-job discovery is deterministic. A worker uses `.parser.lock` to
+serialize claim-state changes and creates `.processing` with exclusive-create
+semantics. The marker contains a random token and heartbeat timestamp.
+
+- a live non-stale marker returns `busy`;
+- a marker older than `PARSER_STALE_LOCK_SEC` is atomically moved to
+  `.processing.stale`, then the job can be reclaimed;
+- a worker writes only to its token-private `.PHARSED.<token>.partial`;
+- a successful run reacquires `.parser.lock`, proves ownership of the same
+  token, revalidates immutable inputs and generated hashes, atomically promotes
+  `PHARSED`, writes `.parsed`, and removes `.processing`;
+- a stale worker that loses its lease cannot publish or record failure over the
+  takeover winner; orphan parser staging is fenced and removed on recovery;
+- repeated scans of `.parsed` jobs are no-ops;
+- failures update `.parse_attempts.json`;
+- after the configured retry budget is exceeded, `.parse_failed` becomes the
+  terminal quarantine marker until an operator explicitly reparses;
+- force reparse may replace Parser-owned state/output only; capture artifacts
+  remain immutable.
+
+Linux inotify only shortens wake-up latency. Directory watches can fail or be
+exhausted; periodic polling remains enabled and provides correctness.
+
+## Time model
+
+RAW filenames and technical metadata use integer Unix nanoseconds represented
+as `<seconds>.<nine digits>`. This is a representation contract, not a claim
+that the platform clock physically measured nanoseconds.
+
+Parsed names use the receive event associated with the candidate's start
+offset, converted through configured `TIMEZONE` (default `Europe/Rome`) and
+truncated to milliseconds. Unix time does not enter TXT/PDF names or
+operator-facing content. Equal millisecond stems receive deterministic `_02`,
+`_03`, and later suffixes within the job.
+
+## Security boundaries
+
+- Both services run under the dedicated non-root account and `UMask=0027`.
+- Files default to `0640`; directories default to `0750`.
+- The Dumper receives only `CAP_NET_BIND_SERVICE`.
+- The Parser receives no capabilities and no IP networking.
+- Configuration/application paths are read-only in the service mount
+  namespace; only job/log roots are writable.
+- Final and intermediate symlinks, traversal, unsafe codes, overlarge metadata,
+  and manifest/hash mismatches are rejected.
+- Receipt payload is excluded from INFO logs; bounded hexdump logging requires
+  all explicit debug gates. Structured records use a bounded non-blocking
+  in-process queue so a slow file/journal sink never backpressures relay pumps;
+  saturation may drop older log records and must be monitored separately.
+- Parser output never replaces or edits source RAW.
+
+Systemd specifics are documented in [SYSTEMD.md](SYSTEMD.md); configuration
+limits are in [CONFIGURATION.md](CONFIGURATION.md).
 
 ## Deliberately absent
 
-- ESC/POS parsing or rendering.
-- Synthetic status/test-print commands.
-- Store-forward, retry, or replay.
-- Official response/error or fiscal-success decoder; only observed framing and
-  standalone ACK presence are decoded.
-- Automatic/service-runtime interface or VIP changes. The optional operator-invoked secondary-address helper is a separate root oneshot service; the proxy process never receives its capabilities.
-- Embedded PCAP capture.
-- Database or remote upload.
+- ESC/POS assumptions or conversion.
+- Synthetic test-print/status/fiscal commands.
+- Network replay or automatic store-and-forward.
+- Official response/error/fiscal-success decoding.
+- Photo/OCR values as parser input.
+- Automatic promotion of crash partials.
+- Automatic deletion or retention pruning in 0.3.0.
+- Automatic migration or deletion of 0.2 artifacts.
+- Embedded PCAP capture, database, or remote upload.

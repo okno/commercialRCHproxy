@@ -14,7 +14,7 @@ from commercialrchproxy.logging.structured import event
 from commercialrchproxy.metrics import Metrics
 from commercialrchproxy.proxy.streams import PumpResult, pump
 from commercialrchproxy.rch.state_machine import SessionState
-from commercialrchproxy.storage.files import JobStorage
+from commercialrchproxy.storage.spool import RawSpoolStorage
 
 
 async def _close_writer(writer: asyncio.StreamWriter | None, *, abort: bool = False) -> None:
@@ -37,10 +37,11 @@ class ProxySession:
         client_reader: asyncio.StreamReader,
         client_writer: asyncio.StreamWriter,
         config: Config,
-        storage: JobStorage,
+        storage: RawSpoolStorage,
         logger: logging.Logger,
         metrics: Metrics,
         device_session_lock: asyncio.Lock,
+        persistence_tasks: set[asyncio.Task[None]],
     ) -> None:
         self.client_reader = client_reader
         self.client_writer = client_writer
@@ -49,7 +50,9 @@ class ProxySession:
         self.logger = logger
         self.metrics = metrics
         self.device_session_lock = device_session_lock
+        self.persistence_tasks = persistence_tasks
         self.session_id = uuid.uuid4().hex
+        self.connection_id = uuid.uuid4().hex
         peer = client_writer.get_extra_info("peername") or ("unknown", None)
         self.client_ip = str(peer[0])
         self.client_port = int(peer[1]) if len(peer) > 1 and peer[1] is not None else None
@@ -63,6 +66,7 @@ class ProxySession:
             "session_start",
             "Client session accepted",
             session_id=self.session_id,
+            connection_id=self.connection_id,
             client=f"{self.client_ip}:{self.client_port}",
             proxy=f"{self.config.listen_ip}:{self.config.listen_port}",
             printer=f"{self.config.printer_ip}:{self.config.printer_port}",
@@ -73,6 +77,7 @@ class ProxySession:
             self.logger,
             self.metrics,
             session_id=self.session_id,
+            connection_id=self.connection_id,
             client_ip=self.client_ip,
             client_port=self.client_port,
         )
@@ -91,13 +96,32 @@ class ProxySession:
             await self.device_session_lock.acquire()
             device_lock_acquired = True
             self.state = SessionState.CONNECTING_PRINTER
-            try:
-                printer_reader, printer_writer = await asyncio.wait_for(
-                    asyncio.open_connection(self.config.printer_ip, self.config.printer_port),
-                    timeout=self.config.connection_timeout_sec,
-                )
-                self._printer_writer = printer_writer
-            except (TimeoutError, ConnectionError, OSError) as exc:
+            connect_error: Exception | None = None
+            printer_reader: asyncio.StreamReader | None = None
+            printer_writer: asyncio.StreamWriter | None = None
+            for attempt in range(1, self.config.printer_connect_attempts + 1):
+                try:
+                    printer_reader, printer_writer = await asyncio.wait_for(
+                        asyncio.open_connection(self.config.printer_ip, self.config.printer_port),
+                        timeout=self.config.connection_timeout_sec,
+                    )
+                    connect_error = None
+                    break
+                except (TimeoutError, ConnectionError, OSError) as exc:
+                    connect_error = exc
+                    if attempt < self.config.printer_connect_attempts:
+                        event(
+                            self.logger,
+                            "printer_connect_retry",
+                            "Configured upstream connection attempt failed; bounded retry pending",
+                            session_id=self.session_id,
+                            connection_id=self.connection_id,
+                            attempt=attempt,
+                            attempts=self.config.printer_connect_attempts,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                        await asyncio.sleep(self.config.printer_connect_retry_delay_sec)
+            if connect_error is not None or printer_reader is None or printer_writer is None:
                 self.state = SessionState.PRINTER_UNREACHABLE
                 self.metrics.increment("printer_connect_errors")
                 transport_status = "printer_unreachable"
@@ -107,10 +131,16 @@ class ProxySession:
                     "printer_unreachable",
                     "Cannot connect to RCH printer",
                     session_id=self.session_id,
+                    connection_id=self.connection_id,
                     printer=f"{self.config.printer_ip}:{self.config.printer_port}",
-                    error=f"{type(exc).__name__}: {exc}",
+                    error=(
+                        f"{type(connect_error).__name__}: {connect_error}"
+                        if connect_error is not None
+                        else "connection attempt produced no stream"
+                    ),
                 )
                 return
+            self._printer_writer = printer_writer
 
             self.state = SessionState.FORWARDING
             c2r = asyncio.create_task(
@@ -215,12 +245,18 @@ class ProxySession:
             finally:
                 if device_lock_acquired:
                     self.device_session_lock.release()
-            # Persistence may start once finalize() seals the segment, but do
-            # not await its hashing/rendering/fsync completion until transports
-            # are closed and the exclusive device lock is released.  The server
-            # still tracks this session task for graceful shutdown.
+            # Persistence may start once finalize() seals the segment.  Track
+            # it independently from the relay session so a slow or hung disk
+            # cannot consume MAX_CONNECTIONS slots after sockets are closed
+            # and the exclusive device lock is released.  ProxyServer still
+            # waits for these tasks during its bounded graceful shutdown.
             if persistence_finalized:
-                await recorder.wait_for_persistence()
+                persistence_task = asyncio.create_task(
+                    recorder.wait_for_persistence(),
+                    name=f"persistence-{self.session_id}",
+                )
+                self.persistence_tasks.add(persistence_task)
+                persistence_task.add_done_callback(self._persistence_done)
             event(
                 self.logger,
                 "session_end",
@@ -229,4 +265,23 @@ class ProxySession:
                 state=self.state.value,
                 transport_status=transport_status,
                 application_success=None,
+                connection_id=self.connection_id,
+            )
+
+    def _persistence_done(self, task: asyncio.Task[None]) -> None:
+        self.persistence_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self.logger.critical(
+                "Capture persistence task failed after relay completion",
+                extra={
+                    "event": "capture_persistence_task_failed",
+                    "fields": {
+                        "session_id": self.session_id,
+                        "connection_id": self.connection_id,
+                        "error": f"{type(error).__name__}: {error}",
+                    },
+                },
             )

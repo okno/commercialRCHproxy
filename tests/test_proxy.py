@@ -12,14 +12,14 @@ from commercialrchproxy.metrics import Metrics
 from commercialrchproxy.proxy import session as session_module
 from commercialrchproxy.proxy.server import ProxyServer
 from commercialrchproxy.proxy.streams import PumpResult
-from commercialrchproxy.storage.files import JobStorage
+from commercialrchproxy.storage.spool import RawSpoolStorage
 from tests.fake_rch_server import FakeRCHServer
 from tests.support import load_manifest, make_config, null_logger, unused_port, wait_for_manifests
 
 
 async def _start_proxy(tmp_path: Path, fake: FakeRCHServer, **overrides: object):
     config = make_config(tmp_path, fake.port, unused_port(), **overrides)
-    server = ProxyServer(config, JobStorage(config), null_logger(), Metrics())
+    server = ProxyServer(config, RawSpoolStorage(config), null_logger(), Metrics())
     await server.start()
     return config, server
 
@@ -51,11 +51,10 @@ async def test_full_duplex_arbitrary_binary_integrity_and_fragmented_response(tm
     assert manifests
     manifest = load_manifest(manifests[0])
     directory = manifests[0].parent
-    assert (directory / str(manifest["files"]["raw"])).read_bytes() == payload
+    assert (directory / str(manifest["files"]["request_raw"])).read_bytes() == payload
     assert (directory / str(manifest["files"]["response_raw"])).read_bytes() == received
-    assert manifest["telnet_iac_candidate_bytes_observed"] is True
-    assert manifest["telnet_negotiation_confirmed"] is False
-    assert manifest["framing_confirmed"] is False
+    assert "framing_confirmed" not in manifest
+    assert "document_type" not in manifest
     assert manifest["bytes_read_from_client"] == len(payload)
     assert manifest["bytes_local_write_drain_to_printer"] == len(payload)
     assert manifest["bytes_arrived_at_printer"] is None
@@ -146,7 +145,7 @@ async def test_configured_device_endpoint_has_only_one_upstream_session_at_a_tim
 
 
 @pytest.mark.asyncio
-async def test_persistent_connection_can_archive_multiple_idle_fallback_jobs(tmp_path: Path) -> None:
+async def test_persistent_connection_is_one_capture_job_and_parser_can_split_it_later(tmp_path: Path) -> None:
     fake = FakeRCHServer(respond_per_chunk=lambda data: b"R:" + data)
     await fake.start()
     config, proxy = await _start_proxy(tmp_path, fake, job_idle_timeout_ms=40, response_timeout_sec=0.4)
@@ -164,25 +163,24 @@ async def test_persistent_connection_can_archive_multiple_idle_fallback_jobs(tmp
         await reader.read()
         writer.close()
         await writer.wait_closed()
-        manifests = await wait_for_manifests(config.output_dir, 2)
+        manifests = await wait_for_manifests(config.output_dir, 1)
     finally:
         await proxy.close()
         await fake.close()
     assert bytes(fake.received) == b"job-onejob-two"
-    raw_payloads = []
-    for manifest_path in manifests:
-        manifest = load_manifest(manifest_path)
-        raw_payloads.append((manifest_path.parent / str(manifest["files"]["raw"])).read_bytes())
-        assert manifest["job_boundary_source"] == "fallback_inactivity"
-        assert float(manifest["job_boundary_confidence"]) <= 0.2
-    assert sorted(raw_payloads) == [b"job-one", b"job-two"]
+    assert len(manifests) == 1
+    manifest = load_manifest(manifests[0])
+    raw = manifests[0].parent / str(manifest["files"]["request_raw"])
+    assert raw.read_bytes() == b"job-onejob-two"
+    assert manifest["job_boundary_source"] == "connection_lifecycle"
+    assert float(manifest["job_boundary_confidence"]) == 0.8
 
 
 @pytest.mark.asyncio
 async def test_printer_offline_produces_no_false_positive_reply(tmp_path: Path) -> None:
     unused = unused_port()
     config = make_config(tmp_path, unused, unused_port(), connection_timeout_sec=0.1)
-    proxy = ProxyServer(config, JobStorage(config), null_logger(), Metrics())
+    proxy = ProxyServer(config, RawSpoolStorage(config), null_logger(), Metrics())
     await proxy.start()
     try:
         reader, writer = await asyncio.open_connection(config.listen_ip, config.listen_port)
@@ -235,19 +233,32 @@ async def test_slow_archive_does_not_hold_transport_or_device_lock(
 ) -> None:
     fake = FakeRCHServer()
     await fake.start()
-    config = make_config(tmp_path, fake.port, unused_port(), response_timeout_sec=0.5)
-    storage = JobStorage(config)
+    config = make_config(
+        tmp_path,
+        fake.port,
+        unused_port(),
+        response_timeout_sec=0.5,
+        max_connections=1,
+    )
+    storage = RawSpoolStorage(config)
     archive_started = threading.Event()
     archive_release = threading.Event()
-    original_archive = storage.archive
+    original_begin_live = storage.begin_live
 
-    def slow_archive(job: object):
-        archive_started.set()
-        if not archive_release.wait(2.0):
-            raise TimeoutError("test did not release archive")
-        return original_archive(job)  # type: ignore[arg-type]
+    def begin_with_slow_publication(job: object):
+        live = original_begin_live(job)  # type: ignore[arg-type]
+        original_finalize = live.finalize
 
-    monkeypatch.setattr(storage, "archive", slow_archive)
+        def slow_finalize(final_job: object):
+            archive_started.set()
+            if not archive_release.wait(2.0):
+                raise TimeoutError("test did not release publication")
+            return original_finalize(final_job)  # type: ignore[arg-type]
+
+        live.finalize = slow_finalize  # type: ignore[method-assign]
+        return live
+
+    monkeypatch.setattr(storage, "begin_live", begin_with_slow_publication)
     proxy = ProxyServer(config, storage, null_logger(), Metrics())
     await proxy.start()
     first_writer = second_writer = None
@@ -258,6 +269,13 @@ async def test_slow_archive_does_not_hold_transport_or_device_lock(
         first_writer.write_eof()
         assert await asyncio.wait_for(asyncio.to_thread(archive_started.wait, 1.0), 1.2)
         assert await asyncio.wait_for(first_reader.read(), 0.3) == b""
+
+        for _ in range(50):
+            if not proxy._sessions:
+                break
+            await asyncio.sleep(0.01)
+        assert not proxy._sessions
+        assert proxy._persistence_tasks
 
         _second_reader, second_writer = await asyncio.open_connection(config.listen_ip, config.listen_port)
         for _ in range(50):

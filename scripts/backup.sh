@@ -3,18 +3,30 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 0077
 
-readonly SERVICE_NAME="commercialrchproxy.service"
+readonly DUMPER_SERVICE="commercialrchproxy-dumper.service"
+readonly PARSER_SERVICE="commercialrchproxy-parser.service"
+readonly LEGACY_SERVICE="commercialrchproxy.service"
+readonly SERVICES=("${DUMPER_SERVICE}" "${PARSER_SERVICE}" "${LEGACY_SERVICE}")
 readonly CONFIG_DIR="/etc/commercialrchproxy"
-readonly DATA_DIR="/var/lib/commercialrchproxy"
-readonly LOG_DIR="/var/log/commercialrchproxy"
+readonly CONFIG_PATH="${CONFIG_DIR}/commercialrchproxy.conf"
 readonly APP_ROOT="/opt/commercialrchproxy"
-readonly UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}"
+readonly UNIT_DIR="/etc/systemd/system"
 readonly LIBEXEC_DIR="/usr/local/libexec/commercialrchproxy"
+readonly NETWORK_LIBEXEC_DIR="/usr/local/libexec/commercialrchproxy-network"
+readonly SECONDARY_UNIT_PATH="${UNIT_DIR}/commercialrchproxy-secondary-ip.service"
+readonly DUMPER_DROPIN_PATH="${UNIT_DIR}/${DUMPER_SERVICE}.d/10-secondary-ip.conf"
+readonly LEGACY_DROPIN_PATH="${UNIT_DIR}/${LEGACY_SERVICE}.d/10-secondary-ip.conf"
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+# shellcheck source=scripts/config_contract.sh
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/config_contract.sh"
 
 BACKUP_DIR="/var/backups/commercialrchproxy"
 ONLINE=0
-WAS_ACTIVE=0
-SERVICE_RESTARTED=0
+ACTIVE_BEFORE=()
+SERVICES_RESTORED=0
 TEMPORARY_ARCHIVE=""
 TEMPORARY_HASH=""
 
@@ -22,11 +34,12 @@ usage() {
     cat <<'EOF'
 Usage: sudo ./scripts/backup.sh [--destination DIR] [--online]
 
-By default the service is stopped briefly to capture a consistent archive,
-then returned to its previous state. --online avoids downtime, but the archive
+By default both independent services are stopped briefly to capture a
+consistent archive, then each is returned to its previous state. --online
+avoids downtime, but the archive
 is labeled UNCONFIRMED because jobs can change while tar is reading them.
 
-Configuration, captured jobs, logs, the unit, installed operations scripts,
+Configuration, captured jobs, logs, all service units, installed operations scripts,
 and the active-release symlink are included. No network connection or protocol
 probe is made.
 EOF
@@ -79,15 +92,20 @@ done
 command -v flock >/dev/null 2>&1 || die "flock is required (package: util-linux)."
 command -v realpath >/dev/null 2>&1 || die "realpath is required (package: coreutils)."
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required (package: coreutils)."
+crch_load_config_contract "${CONFIG_PATH}" || die "Cannot determine the configured backup roots safely."
+OUTPUT_DIR="${CRCH_OUTPUT_DIR}"
+LOG_DIR="${CRCH_LOG_DIR}"
+readonly OUTPUT_DIR LOG_DIR
 
 BACKUP_DIR="$(realpath -m -- "${BACKUP_DIR}")"
-case "${BACKUP_DIR}" in
-    /|/etc|/etc/*|/opt|/opt/commercialrchproxy|/opt/commercialrchproxy/*|\
-    /var|/var/lib|/var/lib/commercialrchproxy|/var/lib/commercialrchproxy/*|\
-    /var/log|/var/log/commercialrchproxy|/var/log/commercialrchproxy/*)
-        die "Backup destination must be outside configuration, application, data, and log trees: ${BACKUP_DIR}"
-        ;;
-esac
+[[ "${BACKUP_DIR}" != "/" ]] || die "Backup destination must not be the filesystem root."
+for managed_root in "${CONFIG_DIR}" "${APP_ROOT}" "${OUTPUT_DIR}" "${LOG_DIR}"; do
+    case "${BACKUP_DIR}/" in
+        "${managed_root}/"*)
+            die "Backup destination must be outside configuration, application, output, and log trees: ${BACKUP_DIR}"
+            ;;
+    esac
+done
 [[ ! -L "${BACKUP_DIR}" ]] || die "Refusing symlinked backup directory: ${BACKUP_DIR}"
 install -d -m 0700 -o root -g root -- "${BACKUP_DIR}"
 
@@ -102,11 +120,11 @@ cleanup_on_exit() {
     if [[ -n "${TEMPORARY_HASH}" ]]; then
         rm -f -- "${TEMPORARY_HASH}"
     fi
-    if [[ "${WAS_ACTIVE}" -eq 1 && "${SERVICE_RESTARTED}" -eq 0 ]]; then
-        if systemctl start "${SERVICE_NAME}"; then
-            SERVICE_RESTARTED=1
+    if [[ "${#ACTIVE_BEFORE[@]}" -gt 0 && "${SERVICES_RESTORED}" -eq 0 ]]; then
+        if systemctl start "${ACTIVE_BEFORE[@]}"; then
+            SERVICES_RESTORED=1
         else
-            printf 'ERROR: backup cleanup could not restart %s.\n' "${SERVICE_NAME}" >&2
+            printf 'ERROR: backup cleanup could not restore the previously active services.\n' >&2
             rc=1
         fi
     fi
@@ -114,27 +132,38 @@ cleanup_on_exit() {
 }
 trap cleanup_on_exit EXIT INT TERM HUP
 
-for source_path in "${CONFIG_DIR}" "${DATA_DIR}" "${LOG_DIR}"; do
+for source_path in "${CONFIG_DIR}" "${OUTPUT_DIR}" "${LOG_DIR}"; do
     [[ ! -L "${source_path}" ]] || die "Refusing to back up symlinked managed directory: ${source_path}"
 done
 
-if systemctl is-active --quiet "${SERVICE_NAME}"; then
-    WAS_ACTIVE=1
+for service_name in "${SERVICES[@]}"; do
+    if systemctl is-active --quiet "${service_name}"; then
+        ACTIVE_BEFORE+=("${service_name}")
+    fi
+done
+if [[ "${#ACTIVE_BEFORE[@]}" -gt 0 ]]; then
     if [[ "${ONLINE}" -eq 0 ]]; then
-        printf '[commercialRCHproxy] Stopping service for a consistent backup.\n'
-        systemctl stop "${SERVICE_NAME}"
+        printf '[commercialRCHproxy] Stopping active services for a consistent backup.\n'
+        systemctl stop "${ACTIVE_BEFORE[@]}"
     else
         printf 'UNCONFIRMED: online archive consistency; jobs may change during backup.\n' >&2
-        SERVICE_RESTARTED=1
+        SERVICES_RESTORED=1
     fi
 fi
 
 archive_items=()
 for source_path in \
-    "${CONFIG_DIR}" "${DATA_DIR}" "${LOG_DIR}" "${UNIT_PATH}" \
-    "${LIBEXEC_DIR}" "${APP_ROOT}/current"; do
+    "${CONFIG_DIR}" "${OUTPUT_DIR}" "${LOG_DIR}" \
+    "${LIBEXEC_DIR}" "${NETWORK_LIBEXEC_DIR}" "${SECONDARY_UNIT_PATH}" \
+    "${DUMPER_DROPIN_PATH}" "${LEGACY_DROPIN_PATH}" "${APP_ROOT}/current"; do
     if [[ -e "${source_path}" || -L "${source_path}" ]]; then
         archive_items+=("${source_path#/}")
+    fi
+done
+for service_name in "${SERVICES[@]}"; do
+    unit_path="${UNIT_DIR}/${service_name}"
+    if [[ -e "${unit_path}" || -L "${unit_path}" ]]; then
+        archive_items+=("${unit_path#/}")
     fi
 done
 
@@ -176,9 +205,9 @@ chmod 0600 -- "${TEMPORARY_HASH}"
 mv -T -- "${TEMPORARY_HASH}" "${final_archive}.sha256"
 TEMPORARY_HASH=""
 
-if [[ "${WAS_ACTIVE}" -eq 1 && "${ONLINE}" -eq 0 ]]; then
-    systemctl start "${SERVICE_NAME}"
-    SERVICE_RESTARTED=1
+if [[ "${#ACTIVE_BEFORE[@]}" -gt 0 && "${ONLINE}" -eq 0 ]]; then
+    systemctl start "${ACTIVE_BEFORE[@]}"
+    SERVICES_RESTORED=1
 fi
 
 trap - EXIT INT TERM HUP

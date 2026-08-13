@@ -52,3 +52,10 @@ def test_unknown_binary_stays_unknown() -> None:
     assert result.candidate_observed_variant is None
     assert result.evidence == "UNCONFIRMED"
     assert result.confidence == 0.0
+
+
+def test_invalid_utf8_fallback_is_lossless_and_never_invents_a_marker() -> None:
+    result = classify(b"\xff\x80DOCUMENTO GESTIONAL\xc8")
+    assert result.document_type is None
+    assert result.candidate_printed_class is None
+    assert result.evidence == "UNCONFIRMED"

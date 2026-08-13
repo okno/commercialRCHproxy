@@ -1,129 +1,186 @@
-# Test report
+# Test report for 0.3.0
 
-## Environment
+## Reporting rule
 
-- Build date: 2026-08-11
-- Development host: Windows, Python 3.14.5 virtual environment
-- Linux packaging runner: WSL Debian, Python 3.13.5
-- Target runtime: Debian/Ubuntu, Python >=3.11
-- Test devices: opaque asyncio relay server plus sanitized offline protocol fixtures
-- Physical RCH Print! F: not connected by the test suite
+This file deliberately does not carry forward 0.2 test counts. The architecture,
+storage contract, entry points, and service units changed in 0.3.0. A result is
+`PASS` only after the final pre-commit worktree was executed on the named
+environment on 2026-08-13.
 
-## Automated scope
+## Final validation snapshot
 
-| Test area | Expected | Current result |
+| Item | Result |
+|---|---|
+| Release under test | `0.3.0` |
+| Commit | pre-commit worktree on base `76b02fa`; no release commit created in this task |
+| Windows Python version | CPython `3.14.5` |
+| Windows pytest | `200 passed, 15 skipped, 0 failed` (11 Linux-only shell-contract tests; 4 unavailable-symlink privilege tests) |
+| Debian/WSL Python version | Debian 13 / CPython `3.13.5` |
+| Debian/WSL pytest | `215 passed, 0 skipped, 0 failed` |
+| Ruff | `PASS`, all `src` and `tests` |
+| Bandit | `PASS`, recursive `src` with `pyproject.toml` policy |
+| compileall | `PASS`, `src` and `tests` |
+| Bash syntax/ShellCheck | `PASS`, all 14 shell scripts |
+| systemd unit verification/security | `PASS` offline verification; Dumper/Parser hardening inspected on systemd 257; target Debian 12 boot remains not performed |
+| dependency lock/wheel install | `PASS`: hash-required binary-only Linux 3.13 install; compatible 3.11 Linux wheel resolution; `pip check`/imports passed |
+| secret/private-evidence guard | `PASS`; decoded public HEX also compared privately against all supplied RAW with no full-stream equality/containment |
+| Physical RCH device | `NON VERIFICABILE` by automated suite |
+| Direct-versus-proxy PCAP | `NON VERIFICABILE` |
+
+## Automated scope present in the repository
+
+The table describes assertions executed by the final Windows/Linux runs.
+`COMPLETATO E TESTATO (sintetico)` is an implementation test and is not
+physical-device proof.
+
+| Area | Assertion | Final result |
 |---|---|---|
-| Config validation | Strict keys, IPv4/ports/paths, no ESC/POS keys | PASS |
-| Arbitrary request bytes | Opaque TCP fixture receives byte-identical stream | PASS (fixture only; not C-4) |
-| Reverse response bytes | Fixture client receives byte-identical stream | PASS (fixture only; not C-4) |
-| Fragmentation/coalescing | No `recv()` boundary assumptions | PASS |
-| Client half-close | Delayed response still returns within bound | PASS |
-| Server-first/IAC bytes | Relayed unchanged, never negotiated/consumed | PASS |
-| Persistent connection | Multiple low-confidence idle jobs supported | PASS |
-| Concurrent clients | Exclusive configured-device lock prevents overlapping upstream sessions | PASS |
-| Printer offline | Client receives no false success payload | PASS |
-| RAW/response archive | Exact bytes and SHA-256 | PASS |
-| Atomic storage | No final partial/temp files after success | PASS |
-| Generic-XML candidate security | DTD/entity rejected; malformed candidate nonfatal; XML7 never asserted | PASS |
-| Candidate document labels | Photo-only phrases stay non-authoritative; recognized observed command lifecycles set an explicitly `INFERRED` document type | PASS |
-| Renderer fixture | Photo-derived proxy PDF is readable; this does not establish production content or physical fidelity | PASS |
-| Health/config check | No live network connection attempted | PASS |
-| Secondary IPv4 helper | Route/prefix/scope validation, owned/borrowed/pending state, rollback, and no port-23 probe | PASS (isolated namespace; target-host activation remains untested) |
-| Tail timeout evidence | A stalled tail remains explicitly incomplete even after response bytes | PASS |
-| Opposite-direction failure | A pump transport failure cancels the other pump immediately rather than waiting/forwarding further bytes | PASS |
-| FIN propagation failure | Failed half-close is a transport error, never clean EOF | PASS |
-| Slow archive isolation | Hash/render/fsync work does not hold transport sockets or the exclusive device-session lock | PASS |
-| Mandatory forensic chain | `SAVE_RAW=false`, `SAVE_TECHNICAL_TXT=false`, and `SAVE_JSON=false` are rejected | PASS |
-| Observed RCH framing | STX/ETX, decimal length, sequence position and XOR BCC accepted without using `recv()` boundaries | PASS |
-| Sanitized corpus shape | 77 complete frames, 39 standalone ACK events, every BCC valid | PASS |
-| TCP segmentation invariance | Whole stream, one byte, seven bytes and deterministic random chunks produce equal frame, parsed JSON and receipt results | PASS |
-| Framing recovery | Bad BCC, truncation, malformed header, invalid terminator and oversize length retained as bounded issues | PASS |
-| Hostile-input bounds | Analysis bytes/events/messages/issues/documents, issue previews, recorder hints and timeline events remain bounded; RAW remains separate | PASS |
-| Commercial reconstruction | Sanitized command stream matches golden receipt and structured fields; display lines excluded | PASS |
-| Management reconstruction | Sanitized printable-line stream matches golden receipt and structured fields | PASS |
-| Missing fields | Unsupported/uncaptured date, payment method, prefix and fiscal fields remain null/empty | PASS |
-| Multiple documents | Two complete candidates in one application stream remain separate | PASS |
-| Request/response correlation | Standalone ACK plus ordinal response and inferred sequence check; mismatch/missing events reported | PASS |
-| Idle-gap regression | ACK does not close the job; delayed framed response remains with the same request | PASS |
-| Very late response | Bytes remain archived in explicit `orphan_late_response` segment | PASS |
-| Receive timeline | Direction, event order, wall/monotonic time, job/session offsets and event hash persist in JSONL | PASS |
-| Derived sidecars | Receipt/PULITO, parsed JSON, timeline, per-document PDF(s) and manifest hashes are published atomically | PASS |
-| Inspector | Direct JSON, per-document forensic directory, exact 168+106/158+106 reassembly, traversal/symlink rejection, incomplete-capture warnings and overwrite refusal | PASS |
-| Static/security checks | Ruff, Bandit, compileall, workflow/Bash syntax, ShellCheck, secret/evidence guard | PASS |
+| Shared configuration | strict known keys, IPv4/ports, paths, timezone, modes, non-root identity, mandatory evidence switches; installer renders configured identity/paths | `PASS` |
+| CODICE_DOC | per-printer persistent counter, atomic lock, collision scan, concurrency uniqueness, minimum width, continuation beyond 9999 | `PASS` |
+| Spool path/naming | printer/date/code hierarchy and exact nine-digit RAW epoch fraction | `PASS` |
+| Empty response | response RAW created deterministically with zero bytes/hash | `PASS` |
+| Atomic publication | partial staging excluded from discovery; manifest/hash/ready binding; final directory visibility | `PASS` |
+| Corruption rejection | bad ready binding, malformed manifest, hash mismatch, unsafe path/symlink, size bound | `PASS` |
+| Relay request equality | simulated client-to-Dumper-to-peer bytes, length, order, and hash unchanged | `COMPLETATO E TESTATO (sintetico)` |
+| Relay response equality | simulated peer-to-Dumper-to-client bytes, length, order, and hash unchanged | `COMPLETATO E TESTATO (sintetico)` |
+| Stream behavior | fragmentation/coalescing, slow directions, response tail, half-close, failure cancellation | `COMPLETATO E TESTATO (sintetico)` |
+| Storage/log isolation | blocked/failed capture worker and blocked log sink do not backpressure the relay; partial preserved | `COMPLETATO E TESTATO (fault injection)` |
+| Storage policy | default continue isolates storage failure; explicit abort surfaces failure; partial preserved | `PASS` |
+| Process independence | Dumper captures with Parser absent; later Parser backlog; Parser code/socket absent from relay process | `COMPLETATO E TESTATO (sintetico)` |
+| Framing | incremental STX/ETX/length/BCC/ACK parsing across whole, one-byte, and arbitrary chunks | `PASS` |
+| Framing failures | truncation, malformed header/terminator, oversize, bad BCC, bounded resynchronization | `PASS` |
+| Semantic isolation | independent management/commercial/copy models; changed value never leaks backward/forward | `COMPLETATO E TESTATO (sintetico)` |
+| Classification | C/G primary type and management subtype candidate rules | `COMPLETATO E TESTATO (sintetico)` |
+| Multiple documents | separate candidates in one reassembled stream; no concatenation/deduplication | `COMPLETATO E TESTATO (sintetico)` |
+| Parser naming | local `HH.MM.SS.mmm`, C/G, deterministic `_02`, no Unix time in TXT/PDF names | `PASS` |
+| Parser idempotency/fencing | claim heartbeat, stale takeover, token-private staging, lease-fenced commit, orphan cleanup, retries/failure state | `COMPLETATO E TESTATO (fault injection)` |
+| Parser immutability | request/response/timeline/manifest/ready hashes unchanged through parse/reparse | `PASS` |
+| PDF/TXT | one pair per model; normalized semantic text consistency; receipt-width readability | `PASS`; protected real partial render also inspected |
+| Watcher | Linux inotify wake-up when available; unconditional polling fallback | `PASS` on WSL/Linux |
+| Offline inspect | bounded direct/archive inspection, frame/document diagnostics, no unsafe overwrite | `PASS` |
+| Offline replay | RAW-to-spool import, no network connection, manifest declares offline/no delivery | `PASS` |
+| Reparse | dry-run, code/root guard, active claim rejection, crash-gap recovery, optional backup, immutable snapshot, nonzero failure exit | `PASS` |
+| systemd | independent real units, rendered shared identity/paths, Dumper bind-only capability, Parser no capabilities/IP network | `PASS` offline; target-host boot not performed |
+| Legacy launcher | no-op compatibility unit controls both real services without making them interdependent | `PASS` static/offline |
 
-## Validation snapshot
+## Private supplied-evidence validation
 
-On 2026-08-11, the version 0.2.0 Python suite reported `137 passed, 2 skipped`
-under Windows Python 3.14.5. Both skips are symlink rejection cases (artifact
-and candidate manifest) because the Windows account lacks symlink-creation
-privilege; traversal, absolute-path and regular-file rejection still ran there.
+No private artifact is committed. The following structural facts were
+reproduced locally and can be rechecked only with the protected source:
 
-The final WSL Debian runner, Python 3.13.5, built and installed the 0.2.0 wheel
-from the hash-locked binary-only dependency set, then reported `139 passed`.
-That Linux run exercised both symlink tests and also passed Ruff, Bandit,
-compileall, workflow/Bash syntax and the fail-closed secret/evidence guard.
+| Check | Result |
+|---|---|
+| Inventory | verified exactly one legacy job, not four captures |
+| Direction sizes | verified 235 request bytes and 202 response bytes |
+| Framing | verified 10 request frames, 9 response frames, 10 standalone ACK |
+| Integrity rules | verified all 19 complete frames satisfy declared length and observed XOR BCC |
+| Segmentation independence | verified equal frame/candidate result for complete, one-byte, and deterministic arbitrary chunks |
+| Semantic result | one incomplete commercial candidate only |
+| Photo 3.1 | strong partial item/reference/total correlation; close and printer-generated regions absent |
+| Photos 1, 2, 3.2 | `NON VERIFICABILE`: corresponding byte streams absent |
+| Four-document price-state acceptance | `NON VERIFICABILE` from private bytes; only one price state captured |
+| Final protected TXT/PDF render/visual check | verified one-page proxy PDF and matching TXT for the single incomplete C candidate; metadata visibly states `STATO: INCOMPLETO`; no clipping observed |
 
-Both deployment and development locks also resolved in binary-only dry
-runs for CPython 3.11 on Linux x86_64 and aarch64. Ruff and Bandit returned no
-findings, all 13 shell scripts passed `bash -n` and ShellCheck, and the
-fail-closed secret/evidence guard passed on that baseline. The operations audit
-also parsed the service with `systemd-analyze security --offline=yes` at
-exposure `1.6 OK`; target-host installation remains untested.
+Source hashes were computed privately but are intentionally excluded from the
+public repository and this report. The public suite must use synthetic
+checksum-correct fixtures, never copied private payload.
 
-The secondary-address helper was exercised as root in isolated mount/network
-namespaces on WSL Debian 13 (systemd 257): real `ip` operations covered owned,
-borrowed, pending, repeated-up, scope, prefix, interface-replacement, and
-post-delete behavior. Its generated unit passed real `systemd-analyze verify`;
-controlled `systemctl` and `arping` doubles isolated service-manager and L2
-effects. This does not replace Debian 12 boot, real systemd lifecycle, physical
-link, or duplicate-host testing.
+## Commands for the final run
 
-Run:
+From a clean trusted checkout/virtual environment:
+
+```bash
+python -m pytest -q
+python -m ruff check src tests
+python -m bandit -c pyproject.toml -r src
+python -m compileall -q src
+```
+
+Run the project wrapper as the authoritative combined check when finalized:
 
 ```bash
 ./scripts/run_tests.sh
 ```
 
-## Private-corpus and photo validation
+On Debian/WSL additionally validate scripts and units using the exact commands
+supported by the target image, for example:
 
-The uncommitted private validation corpus was used to derive and check the
-public synthetic fixtures. No unredacted private artifact, photograph, source
-hash, network value, merchant/device identifier, timestamp, counter, product
-text or monetary literal is stored in Git. Capture-confirmed structural bytes
-and command shapes are intentionally retained only in anonymized fixtures.
+```bash
+find scripts -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck
+systemd-analyze verify systemd/commercialrchproxy-dumper.service
+systemd-analyze verify systemd/commercialrchproxy-parser.service
+systemd-analyze verify systemd/commercialrchproxy.service
+```
 
-| Validation | Private evidence | Result |
-|---|---|---|
-| Frame structure | Both directions across all supplied artifacts | 77/77 frames satisfy delimiter, length and XOR BCC (`CONFIRMED`) |
-| Control events | Printer-to-client copies | 39 standalone ACK, zero NAK; ACK semantics remain `UNKNOWN` |
-| Commercial archive split | Two legacy jobs with equal session identity | 168-byte plus 106-byte request parts form one ordered document exchange; one-second split reproduced as recorder-policy defect |
-| Repeated displays | Four equal request/response pairs | Four distinct TCP sessions; correctly excluded from receipt reconstruction |
-| Commercial paper correlation | Captured item/free-text/total values | Stream-present fields reconstruct in order; display lines stay auxiliary |
-| Management paper correlation | Captured printable body lines | Stream-present body, totals/payment/tax/reference candidates reconstruct in order |
-| Printer-generated fields | Header/heading/footer/device/fiscal areas in photos | Absent from relevant request bytes; deliberately not invented |
-| Encoding hypothesis | All supplied stream layers | Framed one-byte payload; no XML, escaped XML, hexadecimal XML or Base64 |
+If `systemd-analyze security --offline=yes` is available, record each real
+unit's exposure result separately. A parser unit should have no IP networking
+or capabilities; the Dumper should have only `CAP_NET_BIND_SERVICE`.
 
-The document roles above are `INFERRED`, not authenticated official command
-meanings. A paper value is considered reconstructed only when its source frame
-and byte range exist; photo-only values remain null/absent.
+Validate installed console entry points:
 
-## Not tested / blocking production completion
+```bash
+commercialrchproxy-dumper --version
+commercialrchproxy-parser --version
+commercialrchproxy-inspect-dump --help
+commercialrchproxy-replay --help
+commercialrchproxy-reparse --help
+```
 
-- Authenticated Print! F protocol revision, official field names and command semantics.
-- Installed hardware/firmware identification.
-- NET-2 identification of TCP versus UDP/another IP transport; TCP remains an implementation hypothesis.
-- Direct and proxy PCAP comparison.
-- XML7 envelope, namespaces, charset and validation for workflows that actually use XML; XML is absent from the supplied cases.
-- Official ACK scope, NAK/status/error meanings and paper-out/recovery sequences.
-- Broader protocol-native job start/end variants and repeated installed-device lifecycle tests.
-- Multiple complete physical documents on one deployed TCP connection; only the synthetic state-machine case is tested.
-- Authoritative semantics for discounts, returns, cancellations, non-cash payments and unsupported commands.
-- Printer generation/retrieval of header, heading, footer, device and fiscal fields absent from the request stream.
-- Full physical-vs-PULITO-vs-PDF typography/layout fidelity; semantic captured-field correlation is tested separately.
-- Any installed-device PaDES availability, retrieval format, original-byte extraction, or signature validation.
-- Debian/systemd privileged-port integration on the target host.
-- Secondary-address boot/stop behavior on Debian 12/systemd 252, a real LAN
-  interface, a real `iputils-arping` duplicate responder, and host network-manager reload.
-- Management software acceptance, retries, timing, and operational rollback.
+## Manual process-independence acceptance
 
-These are recorded as gates, not silently marked passed.
+Use only a synthetic authorized peer, never an unapproved fiscal operation:
+
+1. start Dumper with Parser stopped;
+2. send a known bidirectional fixture;
+3. verify peer/client bytes and the ready spool job;
+4. start Parser and verify one `.parsed` result;
+5. repeat while stopping Parser mid-relay;
+6. verify relay completion, one ready job, and exactly-once parse after restart;
+7. compare immutable source hashes before/after.
+
+Record commands, fixture hashes, service timestamps, and results privately or
+with sanitized values. Do not put real endpoints/payload in the public report.
+
+## Crash-recovery acceptance
+
+The final run should explicitly demonstrate:
+
+- Dumper termination leaves a hidden partial with no final `.ready` job;
+- Parser ignores job directories without a valid `.ready` binding;
+- malformed manifest and hash mismatch never produce `.parsed`;
+- a killed Parser leaves `.processing`, which is reclaimed only after the
+  configured stale threshold;
+- interrupted Parser output is regenerated without touching capture files;
+- a completed `.parsed` job is a no-op on restart;
+- retry exhaustion produces `.parse_failed` and explicit reparse can recover.
+
+Automated tests may use shortened thresholds and isolated temporary storage;
+target-host behavior must still be validated with production filesystem/systemd.
+
+## Non-claims
+
+Passing this suite does not prove:
+
+- official RCH command semantics;
+- physical device byte equality, timing compatibility, or Telnet behavior;
+- fiscal success/error interpretation;
+- exact thermal-paper layout or original/signed PDF equivalence;
+- correctness for document types/encodings absent from fixtures;
+- the missing three private capture/photo mappings;
+- production backup, disk-full, boot, network-address, firewall, or log-rotation
+  behavior until target-host acceptance is completed.
+
+## Final sign-off
+
+```text
+Commit: pre-commit worktree on base 76b02fa
+Windows: CPython 3.14.5; pytest 200 passed/15 skipped; Ruff/Bandit/compile PASS
+Debian/WSL: Debian 13; CPython 3.13.5; pytest 215 passed; full runner PASS
+Packaging/locks: PASS, hashed/binary-only deployment and dev locks
+Shell/systemd/security: PASS offline; 14 scripts; target Debian 12 boot NON VERIFICABILE
+Secret/evidence guard: PASS; protected full-stream fixture collision scan PASS
+Protected private replay/render: one incomplete C output COMPLETATO E TESTATO
+Physical RCH/PCAP: NON VERIFICABILE
+Residual blockers: missing three real captures; physical/device/PCAP acceptance
+```

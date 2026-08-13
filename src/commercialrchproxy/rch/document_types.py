@@ -27,9 +27,13 @@ UNKNOWN = Classification(None, None, 0.0, "UNCONFIRMED", None, None)
 
 def _visible_text(payload: bytes) -> str:
     bounded = payload[:MAX_CLASSIFICATION_BYTES]
-    text = bounded.decode("utf-8", errors="replace")
-    if text.count("\ufffd") > max(2, len(text) // 50):
-        text = bounded.decode("cp1252", errors="replace")
+    try:
+        text = bounded.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        # The official character set is unknown.  Latin-1 is used only as a
+        # reversible one-byte diagnostic view so no byte is silently replaced
+        # or discarded; this fallback never becomes an authoritative type.
+        text = bounded.decode("latin-1", errors="strict")
     return re.sub(r"\s+", " ", text).upper()
 
 
