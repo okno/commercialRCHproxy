@@ -335,6 +335,8 @@ def receipt_to_dict(document: ParsedReceipt) -> dict[str, object]:
         "document_id": document.document_id,
         "document_type": document.document_type,
         "printed_class": document.printed_class,
+        "subtype": model.metadata.get("subtype"),
+        "subtype_evidence": model.metadata.get("subtype_evidence"),
         "evidence": document.evidence,
         "complete": document.complete,
         "source": {
@@ -361,6 +363,93 @@ def receipt_to_dict(document: ParsedReceipt) -> dict[str, object]:
         },
         "issues": [issue.to_dict() for issue in document.issues],
     }
+
+
+def _item_signature(document: ParsedReceipt) -> tuple[tuple[str, int | None], ...]:
+    signature: list[tuple[str, int | None]] = []
+    for item in document.model.items:
+        description = item.get("description")
+        amount = item.get("amount_cents")
+        if isinstance(description, str):
+            signature.append((description.casefold().strip(), amount if isinstance(amount, int) else None))
+    return tuple(signature)
+
+
+def _primary_total(document: ParsedReceipt) -> int | None:
+    for total in document.model.totals:
+        amount = total.get("amount_cents")
+        if isinstance(amount, int):
+            return amount
+        amounts = total.get("amounts")
+        if isinstance(amounts, list) and len(amounts) == 1 and isinstance(amounts[0], dict):
+            candidate = amounts[0].get("cents")
+            if isinstance(candidate, int):
+                return candidate
+    return None
+
+
+def _assign_document_subtypes(documents: list[ParsedReceipt]) -> None:
+    """Apply only captured-field, evidence-labelled subtype hints.
+
+    A management document is called a conforming-copy candidate only when it
+    follows a separate commercial document in the same reassembled stream and
+    its captured item/total signature matches.  Photos or operator labels are
+    never input to this function.
+    """
+
+    prior_commercial: list[ParsedReceipt] = []
+    for document in documents:
+        model = document.model
+        if document.document_type == "commerciale":
+            model.observed_variant = "documento_commerciale"
+            model.metadata["subtype"] = "DOCUMENTO COMMERCIALE"
+            model.metadata["subtype_evidence"] = INFERRED
+            prior_commercial.append(document)
+            continue
+
+        lines = [line.text.strip() for line in model.lines]
+        upper = [line.upper() for line in lines]
+        explicit_copy = any("COPIA CONFORME" in line for line in upper)
+        command_markers = any(line.startswith("PORTATA:") for line in upper) and any(
+            line.startswith("COPERTI:") for line in upper
+        )
+        explicit_precount = any("PRECONTO" in line for line in upper)
+        subtype = "DOCUMENTO GESTIONALE GENERICO"
+        evidence = UNKNOWN
+        relation: ParsedReceipt | None = None
+
+        if explicit_copy:
+            subtype = "COPIA CONFORME"
+            evidence = INFERRED
+        elif command_markers and not model.totals:
+            subtype = "COMANDA"
+            evidence = INFERRED
+        elif explicit_precount:
+            subtype = "PRECONTO"
+            evidence = INFERRED
+        else:
+            signature = _item_signature(document)
+            total = _primary_total(document)
+            for commercial in reversed(prior_commercial):
+                if signature and signature == _item_signature(commercial) and total is not None:
+                    if total == _primary_total(commercial) and (model.payments or model.taxes):
+                        relation = commercial
+                        break
+            if relation is not None:
+                subtype = "COPIA CONFORME"
+                evidence = INFERRED
+            elif model.items and model.totals and not model.payments and not model.taxes:
+                subtype = "PRECONTO"
+                evidence = INFERRED
+
+        variant = subtype.casefold().replace(" ", "_")
+        model.observed_variant = variant
+        model.metadata["subtype"] = subtype
+        model.metadata["subtype_evidence"] = evidence
+        model.metadata["subtype_source"] = "captured_printable_fields_and_same_stream_order"
+        if relation is not None:
+            model.metadata["copy_of"] = relation.document_id
+            model.metadata["copy_relation_evidence"] = INFERRED
 
 
 @dataclass(slots=True)
@@ -1190,6 +1279,7 @@ def _parse_framed_copies(
         response_framing,
         semantic_budget,
     )
+    _assign_document_subtypes(documents)
     if semantic_budget.issue is not None:
         issues.append(semantic_budget.issue)
 

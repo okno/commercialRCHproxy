@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "commercialRCHproxy"
-version = "0.2.0"
-description = "Evidence-gated full-duplex relay and forensic capture candidate for RCH Print! F"
+version = "0.3.0"
+description = "Independent full-duplex RAW dumper and evidence-gated RCH receipt parser"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -14,6 +14,7 @@ authors = [{ name = "commercialRCHproxy contributors" }]
 dependencies = [
   "defusedxml>=0.7.1,<1",
   "reportlab>=4.0,<5",
+  "tzdata>=2025.2,<2027",
 ]
 
 [project.urls]
@@ -31,7 +32,12 @@ dev = [
 
 [project.scripts]
 commercialrchproxy = "commercialrchproxy.main:cli"
+commercialrchproxy-dumper = "commercialrchproxy.dumper.main:cli"
+commercialrchproxy-parser = "commercialrchproxy.parser.main:main"
 commercialrchproxy-inspect = "commercialrchproxy.tools.inspect_stream:cli"
+commercialrchproxy-inspect-dump = "commercialrchproxy.tools.inspect_stream:cli"
+commercialrchproxy-replay = "commercialrchproxy.tools.replay:cli"
+commercialrchproxy-reparse = "commercialrchproxy.tools.reparse:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]

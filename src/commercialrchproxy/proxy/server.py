@@ -10,7 +10,7 @@ from commercialrchproxy.config import Config
 from commercialrchproxy.logging.structured import event
 from commercialrchproxy.metrics import Metrics
 from commercialrchproxy.proxy.session import ProxySession
-from commercialrchproxy.storage.files import JobStorage
+from commercialrchproxy.storage.spool import RawSpoolStorage
 
 
 class BindError(RuntimeError):
@@ -18,13 +18,14 @@ class BindError(RuntimeError):
 
 
 class ProxyServer:
-    def __init__(self, config: Config, storage: JobStorage, logger: logging.Logger, metrics: Metrics) -> None:
+    def __init__(self, config: Config, storage: RawSpoolStorage, logger: logging.Logger, metrics: Metrics) -> None:
         self.config = config
         self.storage = storage
         self.logger = logger
         self.metrics = metrics
         self._server: asyncio.AbstractServer | None = None
         self._sessions: set[asyncio.Task[None]] = set()
+        self._persistence_tasks: set[asyncio.Task[None]] = set()
         self._device_session_lock = asyncio.Lock()
 
     async def start(self) -> None:
@@ -57,8 +58,29 @@ class ProxyServer:
             printer_port=self.config.printer_port,
             protocol_semantics="UNCONFIRMED",
         )
+        recover_partials = getattr(self.storage, "recover_partials", None)
+        abandoned = recover_partials() if callable(recover_partials) else []
+        for path in abandoned:
+            self.logger.critical(
+                "Abandoned partial capture preserved for offline recovery",
+                extra={
+                    "event": "capture_partial_recovery_required",
+                    "fields": {"path": str(path), "parser_visibility": "not_ready"},
+                },
+            )
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if len(self._sessions) >= self.config.max_connections:
+            peer = writer.get_extra_info("peername")
+            event(
+                self.logger,
+                "connection_limit_reached",
+                "Client connection rejected before opening an upstream session",
+                peer=str(peer),
+                max_connections=self.config.max_connections,
+            )
+            writer.transport.abort()
+            return
         session = ProxySession(
             reader,
             writer,
@@ -67,6 +89,7 @@ class ProxyServer:
             self.logger,
             self.metrics,
             self._device_session_lock,
+            self._persistence_tasks,
         )
         task = asyncio.create_task(session.run(), name=f"session-{session.session_id}")
         self._sessions.add(task)
@@ -96,4 +119,13 @@ class ProxyServer:
                 task.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
+        if self._persistence_tasks:
+            _done, pending_persistence = await asyncio.wait(
+                self._persistence_tasks,
+                timeout=self.config.shutdown_grace_sec,
+            )
+            for task in pending_persistence:
+                task.cancel()
+            if pending_persistence:
+                await asyncio.gather(*pending_persistence, return_exceptions=True)
         event(self.logger, "service_stop", "commercialRCHproxy stopped", metrics=self.metrics.snapshot())

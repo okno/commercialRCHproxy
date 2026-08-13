@@ -93,7 +93,11 @@ def _manifest_files(root: Path) -> list[tuple[Path, dict[str, Any]]]:
     return sorted(
         found,
         key=lambda item: (
-            item[1].get("timestamp_start") if isinstance(item[1].get("timestamp_start"), str) else "",
+            (
+                item[1].get("timestamp_start", item[1].get("opened_at"))
+                if isinstance(item[1].get("timestamp_start", item[1].get("opened_at")), str)
+                else ""
+            ),
             str(item[0]),
         ),
     )
@@ -131,7 +135,7 @@ def _read_manifest_artifact(
     manifest_path: Path,
     manifest: dict[str, Any],
     key: str,
-    expected_hash_key: str,
+    expected_hash: object,
     warnings: list[str],
     max_bytes: int,
 ) -> bytes:
@@ -150,10 +154,22 @@ def _read_manifest_artifact(
     except OSError as exc:
         warnings.append(f"cannot read {path}: {exc}")
         return b""
-    expected = manifest.get(expected_hash_key)
-    if expected and _sha256(data) != expected:
+    if expected_hash and _sha256(data) != expected_hash:
         warnings.append(f"SHA-256 mismatch for {path}")
     return data
+
+
+def _capture_artifact_spec(manifest: dict[str, Any], direction: str) -> tuple[str, object]:
+    """Return the file-map key and expected digest for legacy or spool-v1 manifests."""
+
+    if manifest.get("schema") == "commercialrchproxy.capture.v1":
+        key = "request_raw" if direction == "request" else "response_raw"
+        hashes = manifest.get("sha256")
+        expected = hashes.get(key) if isinstance(hashes, dict) else None
+        return key, expected
+    if direction == "request":
+        return "raw", manifest.get("raw_sha256")
+    return "response_raw", manifest.get("response_raw_sha256")
 
 
 def load_archive_directory(
@@ -197,7 +213,11 @@ def load_archive_directory(
             "printer_port",
         )
         for field_name in endpoint_fields:
-            observed = manifest.get(field_name)
+            manifest_name = {
+                "proxy_ip": "listen_ip",
+                "proxy_port": "listen_port",
+            }.get(field_name, field_name)
+            observed = manifest.get(field_name, manifest.get(manifest_name))
             existing = getattr(current, field_name)
             if existing is None:
                 setattr(current, field_name, observed)
@@ -205,8 +225,8 @@ def load_archive_directory(
                 current.warnings.append(
                     f"inconsistent {field_name} across session manifests: {existing!r} != {observed!r}"
                 )
-        started = manifest.get("timestamp_start")
-        ended = manifest.get("timestamp_end")
+        started = manifest.get("timestamp_start", manifest.get("opened_at"))
+        ended = manifest.get("timestamp_end", manifest.get("closed_at"))
         if not isinstance(started, str) or not started:
             current.warnings.append(
                 f"manifest {manifest_path} has no valid timestamp_start; segment order may be ambiguous"
@@ -221,19 +241,21 @@ def load_archive_directory(
                 current.timestamp_start = started
         if isinstance(ended, str) and (current.timestamp_end is None or ended > current.timestamp_end):
             current.timestamp_end = ended
+        request_key, request_hash = _capture_artifact_spec(manifest, "request")
+        response_key, response_hash = _capture_artifact_spec(manifest, "response")
         request = _read_manifest_artifact(
             manifest_path,
             manifest,
-            "raw",
-            "raw_sha256",
+            request_key,
+            request_hash,
             current.warnings,
             max_input_bytes,
         )
         response = _read_manifest_artifact(
             manifest_path,
             manifest,
-            "response_raw",
-            "response_raw_sha256",
+            response_key,
+            response_hash,
             current.warnings,
             max_input_bytes,
         )
@@ -252,7 +274,11 @@ def load_archive_directory(
         request_bytes[session_id] += len(request)
         response_bytes[session_id] += len(response)
         files = manifest.get("files")
-        timeline_name = files.get("timeline_jsonl") if isinstance(files, dict) else None
+        timeline_name = (
+            files.get("timeline") or files.get("timeline_jsonl")
+            if isinstance(files, dict)
+            else None
+        )
         technical_name = files.get("technical_txt") if isinstance(files, dict) else None
         event_log_name = timeline_name or technical_name
         if event_log_name:
@@ -294,14 +320,14 @@ def load_archive_directory(
             {
                 "manifest": str(manifest_path),
                 "job_id": manifest.get("job_id"),
-                "timestamp_start": manifest.get("timestamp_start"),
-                "timestamp_end": manifest.get("timestamp_end"),
+                "timestamp_start": started,
+                "timestamp_end": ended,
                 "request_bytes": len(request),
                 "response_bytes": len(response),
                 "client_ip": manifest.get("client_ip"),
                 "client_port": manifest.get("client_port"),
-                "proxy_ip": manifest.get("proxy_ip"),
-                "proxy_port": manifest.get("proxy_port"),
+                "proxy_ip": manifest.get("proxy_ip", manifest.get("listen_ip")),
+                "proxy_port": manifest.get("proxy_port", manifest.get("listen_port")),
                 "printer_ip": manifest.get("printer_ip"),
                 "printer_port": manifest.get("printer_port"),
             }

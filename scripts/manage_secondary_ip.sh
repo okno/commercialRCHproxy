@@ -9,7 +9,8 @@ export PYTHONNOUSERSITE=1
 export PYTHONSAFEPATH=1
 umask 0077
 
-readonly APP_SERVICE="commercialrchproxy.service"
+readonly APP_SERVICE="commercialrchproxy-dumper.service"
+readonly LEGACY_APP_SERVICE="commercialrchproxy.service"
 readonly ADDRESS_SERVICE="commercialrchproxy-secondary-ip.service"
 readonly DEFAULT_CONFIG_PATH="/etc/commercialrchproxy/commercialrchproxy.conf"
 readonly CONFIG_DIR="/etc/commercialrchproxy"
@@ -17,6 +18,8 @@ readonly MANAGED_CONFIG_PATH="/etc/commercialrchproxy/secondary-ip.conf"
 readonly UNIT_PATH="/etc/systemd/system/${ADDRESS_SERVICE}"
 readonly DROPIN_DIR="/etc/systemd/system/${APP_SERVICE}.d"
 readonly DROPIN_PATH="${DROPIN_DIR}/10-secondary-ip.conf"
+readonly LEGACY_DROPIN_DIR="/etc/systemd/system/${LEGACY_APP_SERVICE}.d"
+readonly LEGACY_DROPIN_PATH="${LEGACY_DROPIN_DIR}/10-secondary-ip.conf"
 readonly HELPER_DIR="/usr/local/libexec/commercialrchproxy-network"
 readonly HELPER_PATH="${HELPER_DIR}/manage_secondary_ip.sh"
 readonly RUNTIME_DIR="/run/commercialrchproxy-secondary-ip"
@@ -741,6 +744,10 @@ run_check() {
         printf 'Persistent systemd service: NOT INSTALLED\n' >&2
         failed=1
     fi
+    if path_exists "${LEGACY_DROPIN_PATH}"; then
+        printf 'Persistent systemd service: STALE LEGACY PROXY DROP-IN PRESENT\n' >&2
+        failed=1
+    fi
     printf 'RCH protocol/device connection: NOT ATTEMPTED\n'
     return "${failed}"
 }
@@ -786,6 +793,7 @@ rollback_new_install() {
 
 run_install() {
     local address_load_state stage existing=0 new_install_started=0
+    local existing_upgrade=0 had_new_dropin=0 had_legacy_dropin=0 helper_source
     require_root
     [[ -n "${SYSTEMCTL_BIN}" && -n "${FLock_BIN}" ]] || die "systemctl and flock are required"
     command -v systemd-analyze >/dev/null 2>&1 || die "systemd-analyze is required"
@@ -796,7 +804,8 @@ run_install() {
     require_iputils_arping
     show_plan
 
-    for path in "${UNIT_PATH}" "${DROPIN_PATH}" "${MANAGED_CONFIG_PATH}" "${HELPER_PATH}"; do
+    for path in "${UNIT_PATH}" "${DROPIN_PATH}" "${LEGACY_DROPIN_PATH}" \
+        "${MANAGED_CONFIG_PATH}" "${HELPER_PATH}"; do
         if path_exists "${path}"; then
             existing=1
         fi
@@ -808,17 +817,99 @@ run_install() {
         existing=1
     fi
     if [[ "${existing}" -eq 1 ]]; then
-        if ! managed_file "${UNIT_PATH}" || ! managed_file "${DROPIN_PATH}" || \
-           ! managed_file "${MANAGED_CONFIG_PATH}" || ! managed_script "${HELPER_PATH}"; then
+        if ! managed_file "${UNIT_PATH}" || ! managed_file "${MANAGED_CONFIG_PATH}" || \
+           ! managed_script "${HELPER_PATH}"; then
             die "Partial or foreign secondary-IP installation exists; refusing to overwrite it."
         fi
+        if path_exists "${DROPIN_PATH}"; then
+            managed_file "${DROPIN_PATH}" || \
+                die "Foreign dumper secondary-IP drop-in exists; refusing to overwrite it."
+            had_new_dropin=1
+        fi
+        if path_exists "${LEGACY_DROPIN_PATH}"; then
+            managed_file "${LEGACY_DROPIN_PATH}" || \
+                die "Foreign legacy secondary-IP drop-in exists; refusing to overwrite it."
+            had_legacy_dropin=1
+        fi
+        [[ "${had_new_dropin}" -eq 1 || "${had_legacy_dropin}" -eq 1 ]] || \
+            die "Secondary-IP installation has no managed proxy dependency drop-in."
         load_managed_config
         [[ "${MANAGED_LISTEN_IP}" == "${LISTEN_IP}" && "${MANAGED_PRINTER_IP}" == "${PRINTER_IP}" && \
            "${MANAGED_INTERFACE}" == "${INTERFACE}" && "${MANAGED_PREFIX}" == "${PREFIX_LENGTH}" ]] || \
             die "Managed plan differs. Run uninstall, review the new plan, then install again."
+
+        # Refresh a matching installation transactionally.  This also migrates
+        # the v0.2 compatibility-unit drop-in to the Dumper only, without
+        # changing or briefly removing the live address.
+        stage="$(mktemp -d /run/commercialrchproxy-secondary-ip-upgrade.XXXXXX)"
+        chmod 0700 -- "${stage}"
+        install -d -m 0700 -- "${stage}/backup"
+        render_files "${stage}"
+        cp -a -- "${UNIT_PATH}" "${stage}/backup/unit"
+        cp -a -- "${MANAGED_CONFIG_PATH}" "${stage}/backup/config"
+        cp -a -- "${HELPER_PATH}" "${stage}/backup/helper"
+        if [[ "${had_new_dropin}" -eq 1 ]]; then
+            cp -a -- "${DROPIN_PATH}" "${stage}/backup/new-dropin"
+        fi
+        if [[ "${had_legacy_dropin}" -eq 1 ]]; then
+            cp -a -- "${LEGACY_DROPIN_PATH}" "${stage}/backup/legacy-dropin"
+        fi
+        if ! systemd-analyze verify "${stage}/${ADDRESS_SERVICE}" >/dev/null; then
+            rm -rf -- "${stage}"
+            die "Updated systemd service failed validation; the installed helper was unchanged."
+        fi
+        existing_upgrade=1
+        rollback_existing_upgrade() {
+            local rc=$?
+            trap - EXIT INT TERM HUP
+            if [[ "${rc}" -ne 0 && "${existing_upgrade}" -eq 1 ]]; then
+                set +e
+                cp -a -- "${stage}/backup/unit" "${UNIT_PATH}"
+                cp -a -- "${stage}/backup/config" "${MANAGED_CONFIG_PATH}"
+                cp -a -- "${stage}/backup/helper" "${HELPER_PATH}"
+                if [[ "${had_new_dropin}" -eq 1 ]]; then
+                    ensure_privileged_directory "${DROPIN_DIR}" 0755
+                    cp -a -- "${stage}/backup/new-dropin" "${DROPIN_PATH}"
+                else
+                    rm -f -- "${DROPIN_PATH}"
+                fi
+                if [[ "${had_legacy_dropin}" -eq 1 ]]; then
+                    ensure_privileged_directory "${LEGACY_DROPIN_DIR}" 0755
+                    cp -a -- "${stage}/backup/legacy-dropin" "${LEGACY_DROPIN_PATH}"
+                else
+                    rm -f -- "${LEGACY_DROPIN_PATH}"
+                fi
+                "${SYSTEMCTL_BIN}" daemon-reload >/dev/null 2>&1 || true
+                printf 'ERROR: existing secondary-IP helper refresh failed; previous files were restored.\n' >&2
+                set -e
+            fi
+            case "${stage}" in
+                /run/commercialrchproxy-secondary-ip-upgrade.*) rm -rf -- "${stage}" ;;
+                *) printf 'WARNING: refusing unexpected upgrade staging cleanup: %s\n' "${stage}" >&2 ;;
+            esac
+            exit "${rc}"
+        }
+        trap rollback_existing_upgrade EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        trap 'exit 129' HUP
+        ensure_privileged_directory "${DROPIN_DIR}" 0755
+        helper_source="$(readlink -f -- "${BASH_SOURCE[0]}")"
+        if [[ "${helper_source}" != "$(readlink -f -- "${HELPER_PATH}")" ]]; then
+            install -m 0755 -o root -g root -- "${helper_source}" "${HELPER_PATH}"
+        fi
+        install -m 0600 -o root -g root -- "${stage}/secondary-ip.conf" "${MANAGED_CONFIG_PATH}"
+        install -m 0644 -o root -g root -- "${stage}/${ADDRESS_SERVICE}" "${UNIT_PATH}"
+        install -m 0644 -o root -g root -- "${stage}/10-secondary-ip.conf" "${DROPIN_PATH}"
+        rm -f -- "${LEGACY_DROPIN_PATH}"
+        rmdir -- "${LEGACY_DROPIN_DIR}" >/dev/null 2>&1 || true
+        "${SYSTEMCTL_BIN}" daemon-reload
         "${SYSTEMCTL_BIN}" enable --now "${ADDRESS_SERVICE}"
         run_check
-        note "Secondary-IP service was already installed; verified idempotently."
+        existing_upgrade=0
+        trap - EXIT INT TERM HUP
+        rm -rf -- "${stage}"
+        note "Secondary-IP service was refreshed; the dependency targets only ${APP_SERVICE}."
         return 0
     fi
 
@@ -879,12 +970,13 @@ run_install() {
 }
 
 run_uninstall() {
-    local address_load_state answer
+    local address_load_state answer dropin_managed=0
     require_root
     [[ -n "${SYSTEMCTL_BIN}" && -n "${FLock_BIN}" ]] || die "systemctl and flock are required"
     secure_lock "${MANAGER_LOCK}" 9
     address_load_state="$("${SYSTEMCTL_BIN}" show "${ADDRESS_SERVICE}" -p LoadState --value 2>/dev/null || true)"
     if ! path_exists "${UNIT_PATH}" && ! path_exists "${DROPIN_PATH}" && \
+       ! path_exists "${LEGACY_DROPIN_PATH}" && \
        ! path_exists "${MANAGED_CONFIG_PATH}" && ! path_exists "${HELPER_PATH}" && \
        ! path_exists "${RUNTIME_DIR}" && [[ "${address_load_state}" == "not-found" ]] && \
        ! "${SYSTEMCTL_BIN}" is-active --quiet "${ADDRESS_SERVICE}" && \
@@ -895,7 +987,15 @@ run_uninstall() {
     if path_exists "${STATE_PATH}" && [[ ! -x "${HELPER_PATH}" ]]; then
         die "Runtime ownership state exists but the installed helper is missing; restore the matching helper before recovery."
     fi
-    if ! managed_file "${UNIT_PATH}" || ! managed_file "${DROPIN_PATH}" || \
+    if path_exists "${DROPIN_PATH}"; then
+        managed_file "${DROPIN_PATH}" || die "Foreign dumper network drop-in exists; refusing automatic removal."
+        dropin_managed=1
+    fi
+    if path_exists "${LEGACY_DROPIN_PATH}"; then
+        managed_file "${LEGACY_DROPIN_PATH}" || die "Foreign legacy network drop-in exists; refusing automatic removal."
+        dropin_managed=1
+    fi
+    if ! managed_file "${UNIT_PATH}" || [[ "${dropin_managed}" -ne 1 ]] || \
        ! managed_file "${MANAGED_CONFIG_PATH}" || ! managed_script "${HELPER_PATH}"; then
         die "Foreign or partial network files exist; refusing automatic removal."
     fi
@@ -910,9 +1010,11 @@ run_uninstall() {
     if path_exists "${STATE_PATH}"; then
         "${HELPER_PATH}" down
     fi
-    rm -f -- "${DROPIN_PATH}" "${UNIT_PATH}" "${MANAGED_CONFIG_PATH}" "${HELPER_PATH}"
+    rm -f -- "${DROPIN_PATH}" "${LEGACY_DROPIN_PATH}" "${UNIT_PATH}" \
+        "${MANAGED_CONFIG_PATH}" "${HELPER_PATH}"
     rm -f -- "${RUNTIME_LOCK}"
-    rmdir -- "${RUNTIME_DIR}" "${DROPIN_DIR}" "${HELPER_DIR}" "${CONFIG_DIR}" >/dev/null 2>&1 || true
+    rmdir -- "${RUNTIME_DIR}" "${DROPIN_DIR}" "${LEGACY_DROPIN_DIR}" \
+        "${HELPER_DIR}" "${CONFIG_DIR}" >/dev/null 2>&1 || true
     "${SYSTEMCTL_BIN}" daemon-reload
     "${SYSTEMCTL_BIN}" reset-failed "${ADDRESS_SERVICE}" >/dev/null 2>&1 || true
     note "Removed the managed service. Borrowed/pre-existing addresses were preserved."

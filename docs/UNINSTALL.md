@@ -1,38 +1,48 @@
 # Uninstall
 
-Default application removal:
+Default removal:
 
 ```bash
 sudo ./scripts/uninstall.sh
 ```
 
-The service and installed application are removed. The following evidence is preserved:
+The uninstall path should stop/remove:
 
-- `/var/lib/commercialrchproxy/jobs`;
+- `commercialrchproxy-dumper.service`;
+- `commercialrchproxy-parser.service`;
+- legacy `commercialrchproxy.service` launcher;
+- installed application/runtime scripts.
+
+It must preserve by default:
+
+- configured `OUTPUT_DIR`, including hidden `.state`, partials,
+  ready/parsed jobs, and backups;
 - `/etc/commercialrchproxy`;
-- `/var/log/commercialrchproxy`.
+- configured `LOG_DIR`;
+- configured service account/group, so retained ownership remains stable.
 
-Application uninstall does not change networking. If the optional helper was
-installed, its separate service and address state are preserved by default.
-Remove it explicitly before or after application uninstall:
+Application uninstall does not change networking. If the optional secondary
+address helper was installed, remove it separately only under an approved
+network change:
 
 ```bash
 sudo ./scripts/manage_secondary_ip.sh uninstall
 ```
 
-The helper removes only an exact address that its runtime ownership state says
-it added. A pre-existing/borrowed address is preserved. If the source checkout
-is no longer available, the installed helper is at
-`/usr/local/libexec/commercialrchproxy-network/manage_secondary_ip.sh`.
+The helper removes only an address its ownership state says it added. A
+pre-existing/borrowed address is preserved.
 
-Destructive purge requires both the explicit flag and interactive confirmation:
+Destructive purge requires the explicit flag and interactive confirmation:
 
 ```bash
 sudo ./scripts/uninstall.sh --purge
 ```
 
-Purge refuses while the optional secondary-address service is installed,
-active, or enabled because it depends on a root-only configuration below
-`/etc/commercialrchproxy`.
-
-Purge destroys configuration, archives, and logs and is not recoverable unless an external backup exists. Follow legal/accounting retention obligations and verify backup integrity first.
+Purge must refuse while the optional secondary-address service depends on the
+application configuration. It destroys configuration, RAW/spool/counter state,
+parsed outputs, and logs; recovery then requires an external verified backup.
+It parses the preserved configuration without executing it and deletes only
+the validated configured output/log roots and account; if exact targets cannot
+be resolved, purge fails closed.
+Follow legal/accounting/privacy retention policy and verify restore integrity
+first. Uninstall or migration never authorizes replaying captured requests.

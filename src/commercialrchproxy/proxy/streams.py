@@ -5,14 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from time import time_ns
 
 from commercialrchproxy.capture.jobs import CLIENT_TO_RCH
 from commercialrchproxy.capture.recorder import JobCaptureManager
 from commercialrchproxy.config import Config
 from commercialrchproxy.logging.structured import event
 from commercialrchproxy.metrics import Metrics
-
-BUFFER_SIZE = 64 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +54,7 @@ async def pump(
     metric_name = "bytes_to_rch" if direction == CLIENT_TO_RCH else "bytes_from_rch"
     try:
         while True:
-            data = await reader.read(BUFFER_SIZE)
+            data = await reader.read(config.buffer_size)
             if not data:
                 half_close_error = await _half_close(writer)
                 if half_close_error is not None:
@@ -65,10 +64,17 @@ async def pump(
             # Queue opaque bytes toward the peer before doing any capture or
             # boundary-hint work.  The parser only sees a copy and can fail
             # without changing the forwarded stream.
+            received_unix_ns = time_ns()
             writer.write(data)
+            forwarded_unix_ns = time_ns()
             token = None
             try:
-                token = await recorder.record(direction, data)
+                token = await recorder.record(
+                    direction,
+                    data,
+                    received_unix_ns=received_unix_ns,
+                    forwarded_unix_ns=forwarded_unix_ns,
+                )
             except Exception as exc:
                 logger.exception(
                     "Capture failed; opaque byte-copy path continues",
@@ -77,13 +83,19 @@ async def pump(
                         "fields": {"session_id": session_id, "direction": direction, "error": str(exc)},
                     },
                 )
+                if config.storage_failure_policy == "abort":
+                    raise
             local_drain_completed = False
+            drain_error: str | None = None
             try:
                 await asyncio.wait_for(writer.drain(), timeout=config.connection_timeout_sec)
                 local_drain_completed = True
+            except (TimeoutError, ConnectionError, OSError) as exc:
+                drain_error = f"{type(exc).__name__}: {exc}"
+                raise
             finally:
                 if token is not None:
-                    await recorder.mark_local_write_drain(token, local_drain_completed)
+                    await recorder.mark_local_write_drain(token, local_drain_completed, error=drain_error)
             total += len(data)
             metrics.increment(metric_name, len(data))
             event(

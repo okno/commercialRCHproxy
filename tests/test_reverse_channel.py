@@ -8,14 +8,14 @@ import pytest
 from commercialrchproxy.metrics import Metrics
 from commercialrchproxy.proxy.server import ProxyServer
 from commercialrchproxy.proxy.streams import _half_close
-from commercialrchproxy.storage.files import JobStorage
+from commercialrchproxy.storage.spool import RawSpoolStorage
 from tests.fake_rch_server import FakeRCHServer
 from tests.support import load_manifest, make_config, null_logger, unused_port, wait_for_manifests
 
 
 async def _proxy(tmp_path: Path, fake: FakeRCHServer, **overrides: object):
     config = make_config(tmp_path, fake.port, unused_port(), **overrides)
-    proxy = ProxyServer(config, JobStorage(config), null_logger(), Metrics())
+    proxy = ProxyServer(config, RawSpoolStorage(config), null_logger(), Metrics())
     await proxy.start()
     return config, proxy
 
@@ -39,9 +39,9 @@ async def test_opaque_error_looking_response_is_forwarded_not_interpreted(tmp_pa
         await proxy.close()
         await fake.close()
     manifest = load_manifest(manifests[0])
-    assert manifest["protocol_status"] is None
-    assert manifest["application_success"] is None
-    assert manifest["rch_error_code"] is None
+    assert "protocol_status" not in manifest
+    assert "application_success" not in manifest
+    assert "rch_error_code" not in manifest
 
 
 @pytest.mark.asyncio
@@ -91,9 +91,9 @@ async def test_nonclosing_printer_tail_is_bounded_and_not_called_success(tmp_pat
         await fake.close()
     assert elapsed < 0.8
     manifest = load_manifest(manifests[0])
-    assert manifest["application_success"] is None
-    assert "tail_timeout" in str(manifest["transport_status"])
-    assert "incomplete" in str(manifest["transport_status"])
+    assert "application_success" not in manifest
+    assert "tail_timeout" in str(manifest["close_reason"])
+    assert "incomplete" in str(manifest["close_reason"])
     assert manifest["bytes_read_from_client"] == len(b"request-with-no-response")
     assert manifest["bytes_local_write_drain_to_printer"] == len(b"request-with-no-response")
     assert manifest["bytes_arrived_at_printer"] is None
@@ -126,9 +126,9 @@ async def test_tail_timeout_is_recorded_even_after_response_bytes_arrive(tmp_pat
         await proxy.close()
         await fake.close()
     manifest = load_manifest(manifests[0])
-    assert "tail_timeout" in manifest["transport_status"]
-    assert "incomplete" in manifest["transport_status"]
-    assert manifest["application_success"] is None
+    assert "tail_timeout" in manifest["close_reason"]
+    assert "incomplete" in manifest["close_reason"]
+    assert "application_success" not in manifest
 
 
 @pytest.mark.asyncio

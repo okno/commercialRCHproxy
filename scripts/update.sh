@@ -19,7 +19,7 @@ Options:
   --skip-backup              Explicitly skip the pre-update backup
   --backup-destination DIR   Override /var/backups/commercialrchproxy
   --with-system-packages     Allow install.sh to refresh apt dependencies
-  --no-start                 Leave the service stopped after deployment
+  --no-start                 Leave both independent services stopped after deployment
   -h, --help                 Show this help
 
 The updater accepts only a clean, dedicated Git checkout and a fast-forward

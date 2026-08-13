@@ -25,6 +25,10 @@ def _expected(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
+def _synthetic_request(*payloads: bytes) -> bytes:
+    return b"".join(build_frame(data, sequence=str(index % 10)) for index, data in enumerate(payloads))
+
+
 def test_commercial_stream_matches_sanitized_golden_output() -> None:
     result = parse_protocol_copies(
         _hex_fixture("rch_synthetic_commercial.request.hex"),
@@ -43,7 +47,7 @@ def test_commercial_stream_matches_sanitized_golden_output() -> None:
     assert document.model.items[0]["amount_cents"] == 0
     assert document.model.items[0]["quantity"] == 1
     assert document.model.metadata["order_value"] == "XX"
-    assert document.model.document_number == "0000"
+    assert document.model.document_number == "3141"
     assert document.model.metadata["document_number_scope"] == "suffix_only"
     assert document.model.metadata["document_number_prefix"] is None
     assert document.model.payments == [
@@ -330,3 +334,55 @@ def test_malformed_t_prefix_cannot_enable_post_payment_counter() -> None:
 
     assert result.documents[0].complete
     assert result.documents[0].model.document_number is None
+
+
+def test_price_change_is_isolated_across_precount_commercial_and_conforming_copy() -> None:
+    request = _synthetic_request(
+        b"=o",
+        b'="/(VOCE ALFA 88,00 A)',
+        b'="/(TOT 88,00)',
+        b"=o",
+        b"=K",
+        b"=R1/$300/*1/(VOCE ALFA)",
+        b"=T1/$300",
+        b"<</?7",
+        b"=o",
+        b'="/(VOCE ALFA 3,00 A)',
+        b'="/(TOT 3,00)',
+        b'="/(Contanti 3,00)',
+        b'="/(RESTO 0,00)',
+        b'="/(A 10% 10% 0,91 0,09)',
+        b"=o",
+    )
+
+    result = parse_protocol_copies(request, b"")
+
+    assert len(result.documents) == 3
+    precount, commercial, conforming_copy = result.documents
+    assert precount.model.metadata["subtype"] == "PRECONTO"
+    assert precount.model.items[0]["amount_cents"] == 8800
+    assert precount.model.totals[0]["amounts"][0]["cents"] == 8800
+    assert commercial.model.metadata["subtype"] == "DOCUMENTO COMMERCIALE"
+    assert commercial.model.items[0]["amount_cents"] == 300
+    assert commercial.model.totals[0]["amount_cents"] == 300
+    assert conforming_copy.model.metadata["subtype"] == "COPIA CONFORME"
+    assert conforming_copy.model.metadata["copy_of"] == commercial.document_id
+    assert conforming_copy.model.items[0]["amount_cents"] == 300
+    assert conforming_copy.model.totals[0]["amounts"][0]["cents"] == 300
+
+
+def test_management_command_requires_captured_markers_and_never_invents_prices() -> None:
+    request = _synthetic_request(
+        b"=o",
+        b'="/(Portata: 1)',
+        b'="/(VOCE ALFA)',
+        b'="/(Coperti: 1)',
+        b"=o",
+    )
+
+    document = parse_protocol_copies(request, b"").documents[0]
+
+    assert document.document_type == "gestionale"
+    assert document.model.metadata["subtype"] == "COMANDA"
+    assert document.model.items == []
+    assert document.model.amounts == []

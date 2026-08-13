@@ -44,21 +44,22 @@ def null_logger() -> logging.Logger:
 
 
 async def wait_for_manifests(root: Path, count: int, timeout: float = 3.0) -> list[Path]:
+    def ready_manifests() -> list[Path]:
+        if not root.exists():
+            return []
+        return sorted(
+            path
+            for path in root.rglob("manifest.json")
+            if path.parent.name.isdecimal() and (path.parent / ".ready").is_file()
+        )
+
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
-        found = (
-            sorted(path for path in root.rglob("*.json") if not path.name.endswith(".parsed.json"))
-            if root.exists()
-            else []
-        )
+        found = ready_manifests()
         if len(found) >= count:
             return found
         await asyncio.sleep(0.02)
-    return (
-        sorted(path for path in root.rglob("*.json") if not path.name.endswith(".parsed.json"))
-        if root.exists()
-        else []
-    )
+    return ready_manifests()
 
 
 def load_manifest(path: Path) -> dict[str, object]:

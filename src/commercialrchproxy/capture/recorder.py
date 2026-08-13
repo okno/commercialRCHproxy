@@ -1,91 +1,82 @@
-"""Non-inline idle-fallback job recorder.
+"""Dumper-only capture manager.
 
-The idle timer is explicitly a fallback until a documented/observed RCH job
-boundary is available.  Storage and parsing run in background tasks.
+This module intentionally performs no RCH framing, document boundary
+inference, decoding, TXT generation or PDF rendering.  A complete transport
+connection becomes one atomically published spool job; semantic documents are
+split later by the independent parser process.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
-from dataclasses import dataclass
-from time import monotonic_ns
+from time import monotonic_ns, time_ns
+from typing import Any
 
-from commercialrchproxy.capture.jobs import (
-    CLIENT_TO_RCH,
-    RCH_TO_CLIENT,
-    CapturedJob,
-    CaptureToken,
-    utc_now,
-)
+from commercialrchproxy.capture.jobs import CLIENT_TO_RCH, CapturedChunk, CapturedJob, CaptureToken
 from commercialrchproxy.config import Config
 from commercialrchproxy.logging.structured import event
 from commercialrchproxy.metrics import Metrics
-from commercialrchproxy.rch.framing import RCHFrame, RCHStreamFramer
-from commercialrchproxy.storage.files import ArchiveResult, JobStorage
+from commercialrchproxy.storage.spool import LiveSpoolCapture, RawSpoolStorage, SpoolArchiveResult
 
-_ACK = 0x06
-_MAX_RESPONSE_HINTS = 4096
-_MAX_HINT_BYTES_PER_CHUNK = 8192
-
-
-def _decimal_sequence(frame: RCHFrame) -> int | None:
-    return int(frame.sequence) if len(frame.sequence) == 1 and frame.sequence.isdecimal() else None
-
-
-@dataclass(frozen=True, slots=True)
-class _Observation:
-    stale_response_matches: int = 0
-    unmatched_response_frames: int = 0
+_CAPTURE_QUEUE_BYTE_BUDGET = 8 * 1024 * 1024
 
 
 class JobCaptureManager:
     def __init__(
         self,
         config: Config,
-        storage: JobStorage,
+        storage: RawSpoolStorage,
         logger: logging.Logger,
         metrics: Metrics,
         *,
         session_id: str,
         client_ip: str,
         client_port: int | None,
+        connection_id: str | None = None,
     ) -> None:
         self.config = config
         self.storage = storage
         self.logger = logger
         self.metrics = metrics
         self.session_id = session_id
+        self.connection_id = connection_id or session_id
         self.client_ip = client_ip
         self.client_port = client_port
         self._active: CapturedJob | None = None
         self._lock = asyncio.Lock()
-        self._idle_task: asyncio.Task[None] | None = None
-        self._persist_tasks: set[asyncio.Task[None]] = set()
-        self._generation = 0
         self._closed = False
-        self._session_tail_active = False
-        self._request_framer = RCHStreamFramer(retain_history=False)
-        self._response_framer = RCHStreamFramer(retain_history=False)
-        # These queues are only non-authoritative boundary hints.  Bound them
-        # independently from the RAW capture so an unresponsive peer cannot
-        # grow process memory indefinitely by sending valid request frames.
-        self._pending_responses: deque[int] = deque(maxlen=_MAX_RESPONSE_HINTS)
-        self._stale_pending_responses: deque[int] = deque(maxlen=_MAX_RESPONSE_HINTS)
-        self._response_hint_limit_reported = False
-        self._hint_budget_reported = False
-        self._boundary_hints_degraded = False
-        self._commercial_candidate_open = False
-        self._management_candidate_open = False
-        self._active_is_orphan_late_response = False
-        self._chunk_sequence = 0
-        self._session_offsets = {CLIENT_TO_RCH: 0, RCH_TO_CLIENT: 0}
+        self._event_sequence = 0
+        self._session_offsets = {"CLIENT -> RCH": 0, "RCH -> CLIENT": 0}
+        self._persist_tasks: set[asyncio.Task[None]] = set()
+        self._persist_errors: list[Exception] = []
+        self._streaming = callable(getattr(storage, "begin_live", None))
+        queue_items = max(1, min(256, _CAPTURE_QUEUE_BYTE_BUDGET // config.buffer_size))
+        self._stream_queue: asyncio.Queue[tuple[Any, ...]] | None = (
+            asyncio.Queue(maxsize=queue_items) if self._streaming else None
+        )
+        # Finalization must never depend on finding room in the bounded data
+        # queue.  The unbounded control queue wakes a consumer that is waiting
+        # on an empty data queue; the event remains authoritative if both
+        # queues become ready in the same event-loop turn.
+        self._stream_finalize_requested = asyncio.Event()
+        self._stream_control: asyncio.Queue[None] = asyncio.Queue()
+        self._stream_worker_task: asyncio.Task[None] | None = None
+        self._capture_degraded = False
+        self._capture_degrade_reason: str | None = None
 
-    def _new_job(self) -> CapturedJob:
-        self.metrics.increment("jobs_total")
+    def _required_stream_queue(self) -> asyncio.Queue[tuple[Any, ...]]:
+        queue = self._stream_queue
+        if queue is None:
+            raise RuntimeError("live capture queue is not initialized")
+        return queue
+
+    def _new_job(self, *, started_unix_ns: int) -> CapturedJob:
+        from datetime import UTC, datetime
+
         return CapturedJob(
             session_id=self.session_id,
+            connection_id=self.connection_id,
             client_ip=self.client_ip,
             client_port=self.client_port,
             proxy_ip=self.config.listen_ip,
@@ -93,293 +84,338 @@ class JobCaptureManager:
             printer_ip=self.config.printer_ip,
             printer_port=self.config.printer_port,
             max_payload_bytes=self.config.max_payload_bytes,
+            max_capture_events=self.config.max_capture_events,
+            started_at=datetime.fromtimestamp(started_unix_ns / 1_000_000_000, tz=UTC),
+            started_unix_ns=started_unix_ns,
+            boundary_source="connection_lifecycle",
+            boundary_confidence=0.80,
         )
 
-    async def record(self, direction: str, data: bytes) -> CaptureToken | None:
-        if self._closed or not data:
+    async def record(
+        self,
+        direction: str,
+        data: bytes,
+        *,
+        received_unix_ns: int | None = None,
+        forwarded_unix_ns: int | None = None,
+    ) -> CaptureToken | None:
+        if not data:
             return None
+        received_ns = time_ns() if received_unix_ns is None else received_unix_ns
         async with self._lock:
-            observed_before_append = False
-            observation = _Observation()
-            suspected_orphan_ack = False
-            # Classify, but never discard, a response which arrives after the
-            # bounded fallback already archived its incomplete request.
-            if self._active is None and direction == RCH_TO_CLIENT:
-                observation = self._observe(direction, data)
-                observed_before_append = True
-                suspected_orphan_ack = bool(
-                    self._stale_pending_responses and data and all(byte == _ACK for byte in data)
-                )
+            if self._closed:
+                return None
             if self._active is None:
-                self._active = self._new_job()
-                self._reset_active_protocol_state()
-                self._active_is_orphan_late_response = bool(
-                    observation.stale_response_matches or suspected_orphan_ack
-                )
-            self._chunk_sequence += 1
-            session_offset = self._session_offsets.get(direction, 0)
-            observed_at = utc_now().isoformat()
-            observed_monotonic_ns = monotonic_ns()
+                self._active = self._new_job(started_unix_ns=received_ns)
+                if self._streaming:
+                    self._start_live_worker(self._active)
+            if self._persist_errors and self.config.storage_failure_policy == "abort":
+                raise RuntimeError(f"RAW live spool failed: {self._persist_errors[-1]}")
+            self._event_sequence += 1
+            session_offset = self._session_offsets[direction]
+            before_stored = (
+                self._active.bytes_stored_from_client
+                if direction == CLIENT_TO_RCH
+                else self._active.bytes_stored_from_printer
+            )
             chunk_index = self._active.append(
                 direction,
                 data,
-                sequence=self._chunk_sequence,
+                sequence=self._event_sequence,
                 session_offset=session_offset,
-                timestamp=observed_at,
-                observed_monotonic_ns=observed_monotonic_ns,
+                timestamp=None,
+                observed_monotonic_ns=monotonic_ns(),
+                received_unix_ns=received_ns,
+                forwarded_unix_ns=forwarded_unix_ns,
+                retain_payload=not self._streaming,
             )
-            self._advance_session_position(direction, len(data))
-            if not observed_before_append:
-                observation = self._observe(direction, data)
-            if observation.stale_response_matches:
-                self._active_is_orphan_late_response = True
-                event(
-                    self.logger,
-                    "late_correlated_response_segment",
-                    "A response arrived after its request segment timed out; RAW bytes were retained separately",
-                    session_id=self.session_id,
-                    job_id=self._active.job_id,
-                    response_frames=observation.stale_response_matches,
+            self._session_offsets[direction] += len(data)
+            after_stored = (
+                self._active.bytes_stored_from_client
+                if direction == CLIENT_TO_RCH
+                else self._active.bytes_stored_from_printer
+            )
+            stored = bytes(data[: after_stored - before_stored])
+            if self._streaming and not self._persist_errors and not self._capture_degraded:
+                chunk: CapturedChunk | None = (
+                    self._active.chunks[chunk_index] if chunk_index is not None else None
                 )
-            token = CaptureToken(self._active.job_id, chunk_index, direction, len(data))
-            self._generation += 1
-            if self._idle_task is not None:
-                self._idle_task.cancel()
-                self._idle_task = None
-            return token
-
-    def _advance_session_position(self, direction: str, byte_count: int) -> None:
-        self._session_offsets[direction] = self._session_offsets.get(direction, 0) + byte_count
-
-    def _reset_active_protocol_state(self) -> None:
-        self._pending_responses.clear()
-        self._commercial_candidate_open = False
-        self._management_candidate_open = False
-
-    def _append_response_hint(self, queue: deque[int], sequence: int) -> None:
-        if len(queue) == queue.maxlen and not self._response_hint_limit_reported:
-            self._response_hint_limit_reported = True
-            event(
-                self.logger,
-                "capture_boundary_hint_limit",
-                "Response-correlation hint queue reached its bound; oldest hints will be discarded",
-                session_id=self.session_id,
-                max_hints=queue.maxlen,
+                await self._enqueue_stream(
+                    self._active,
+                    ("append", self._event_sequence, direction, stored, chunk),
+                )
+            return CaptureToken(
+                self._active.job_id,
+                chunk_index,
+                direction,
+                len(data),
+                self._event_sequence,
             )
-        queue.append(sequence)
 
-    def _carry_pending_hints_to_stale(self) -> None:
-        for sequence in self._pending_responses:
-            self._append_response_hint(self._stale_pending_responses, sequence)
-
-    def _observe(self, direction: str, data: bytes) -> _Observation:
-        """Update only fallback-boundary hints; malformed input is fail-open."""
-        try:
-            if len(data) > _MAX_HINT_BYTES_PER_CHUNK:
-                self._boundary_hints_degraded = True
-                if direction == CLIENT_TO_RCH:
-                    self._request_framer = RCHStreamFramer(retain_history=False)
-                else:
-                    self._response_framer = RCHStreamFramer(retain_history=False)
-                if not self._hint_budget_reported:
-                    self._hint_budget_reported = True
-                    event(
-                        self.logger,
-                        "capture_boundary_hint_budget",
-                        "Oversized receive chunk skipped by the non-authoritative boundary hint parser",
-                        session_id=self.session_id,
-                        max_hint_bytes_per_chunk=_MAX_HINT_BYTES_PER_CHUNK,
-                    )
-                return _Observation(unmatched_response_frames=1 if direction == RCH_TO_CLIENT else 0)
-            if direction == CLIENT_TO_RCH:
-                event_items = self._request_framer.feed(data)
-                for event_item in event_items:
-                    if (
-                        not isinstance(event_item, RCHFrame)
-                        or not event_item.bcc_valid
-                        or event_item.address != "00"
-                        or event_item.frame_class != "z"
-                    ):
-                        continue
-                    sequence = _decimal_sequence(event_item)
-                    if sequence is not None:
-                        self._append_response_hint(self._pending_responses, (sequence + 8) % 10)
-                    if event_item.data == b"=K":
-                        self._commercial_candidate_open = True
-                        self._management_candidate_open = False
-                    elif event_item.data == b"<</?" or (
-                        len(event_item.data) == 5
-                        and event_item.data.startswith(b"<</?")
-                        and event_item.data[-1:].isdigit()
-                    ):
-                        self._commercial_candidate_open = False
-                    if event_item.data == b"=o":
-                        self._commercial_candidate_open = False
-                        self._management_candidate_open = not self._management_candidate_open
-                if not self._request_framer.buffered_bytes:
-                    # The public framer retains forensic history by design;
-                    # the recorder only needs incremental carry-over bytes.
-                    self._request_framer = RCHStreamFramer(retain_history=False)
-                return _Observation()
-
-            stale_matches = 0
-            unmatched = 0
-            event_items = self._response_framer.feed(data)
-            for event_item in event_items:
-                if (
-                    not isinstance(event_item, RCHFrame)
-                    or not event_item.bcc_valid
-                    or event_item.address != "01"
-                    or event_item.frame_class != "N"
-                ):
-                    continue
-                sequence = _decimal_sequence(event_item)
-                if sequence is None:
-                    unmatched += 1
-                    continue
-                if self._pending_responses and sequence == self._pending_responses[0]:
-                    self._pending_responses.popleft()
-                elif not self._pending_responses and self._stale_pending_responses:
-                    if sequence == self._stale_pending_responses[0]:
-                        self._stale_pending_responses.popleft()
-                        stale_matches += 1
-                    else:
-                        unmatched += 1
-                else:
-                    unmatched += 1
-            if not self._response_framer.buffered_bytes:
-                self._response_framer = RCHStreamFramer(retain_history=False)
-            return _Observation(stale_response_matches=stale_matches, unmatched_response_frames=unmatched)
-        except Exception as exc:
-            # Capture and forwarding must never depend on the boundary hint.
-            self.metrics.increment("parser_errors")
-            event(
-                self.logger,
-                "capture_boundary_hint_error",
-                "Observed-frame boundary hint failed; opaque capture continues",
-                session_id=self.session_id,
-                direction=direction,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            return _Observation(unmatched_response_frames=1 if direction == RCH_TO_CLIENT else 0)
-
-    def _needs_extended_idle(self) -> bool:
-        return bool(
-            self._pending_responses
-            or self._commercial_candidate_open
-            or self._management_candidate_open
-            or (self._active_is_orphan_late_response and self._stale_pending_responses)
-            or self._request_framer.buffered_bytes
-            or self._response_framer.buffered_bytes
-            or self._boundary_hints_degraded
-        )
-
-    async def mark_local_write_drain(self, token: CaptureToken, completed: bool) -> None:
+    async def mark_local_write_drain(
+        self,
+        token: CaptureToken,
+        completed: bool,
+        *,
+        error: str | None = None,
+    ) -> None:
         async with self._lock:
             if self._active is None or self._active.job_id != token.job_id:
                 return
-            self._active.mark_local_write_drain(token, completed)
-            self._generation += 1
-            generation = self._generation
-            if self._idle_task is not None:
-                self._idle_task.cancel()
-            if self._session_tail_active:
-                self._idle_task = None
-                return
-            # ACK (0x06) is transport/application chatter, not completion of
-            # the queued request.  Keep the segment open through the response
-            # window while an observed response or document close is pending.
-            idle_delay = self.config.job_idle_timeout_ms / 1000.0
-            delay = self.config.response_timeout_sec + idle_delay if self._needs_extended_idle() else idle_delay
-            self._idle_task = asyncio.create_task(self._idle_watch(generation, delay))
+            drain_unix_ns = time_ns()
+            self._active.mark_local_write_drain(
+                token,
+                completed,
+                drain_unix_ns=drain_unix_ns,
+                error=error,
+            )
+            if (
+                self._streaming
+                and token.sequence is not None
+                and not self._persist_errors
+                and not self._capture_degraded
+            ):
+                await self._enqueue_stream(
+                    self._active,
+                    ("drain", token.sequence, completed, drain_unix_ns, error),
+                )
+            if self._persist_errors and self.config.storage_failure_policy == "abort":
+                raise RuntimeError(f"RAW live spool failed: {self._persist_errors[-1]}")
 
     async def begin_session_tail(self) -> None:
-        """Keep the active segment open once either stream direction ends.
-
-        This ensures a later tail timeout is recorded on the segment instead
-        of letting an inactivity timer archive it as a clean local close.
-        """
-        async with self._lock:
-            self._session_tail_active = True
-            if self._idle_task is not None:
-                self._idle_task.cancel()
-                self._idle_task = None
-
-    async def _idle_watch(self, generation: int, delay: float) -> None:
-        try:
-            await asyncio.sleep(delay)
-            async with self._lock:
-                if generation != self._generation or self._active is None:
-                    return
-                job = self._active
-                self._active = None
-                self._idle_task = None
-                self._carry_pending_hints_to_stale()
-                self._reset_active_protocol_state()
-                self._boundary_hints_degraded = False
-                if self._active_is_orphan_late_response:
-                    job.boundary_source = "orphan_late_response"
-                    job.boundary_confidence = 0.10
-                else:
-                    job.boundary_source = "fallback_inactivity"
-                    job.boundary_confidence = 0.20
-                self._active_is_orphan_late_response = False
-                job.finish()
-            self._schedule_persist(job)
-        except asyncio.CancelledError:
-            return
+        """Compatibility no-op: transport tail handling belongs to the session."""
 
     def _schedule_persist(self, job: CapturedJob) -> None:
-        task = asyncio.create_task(self._persist(job))
+        task = asyncio.create_task(self._persist(job), name=f"spool-{job.job_id}")
         self._persist_tasks.add(task)
         task.add_done_callback(self._persist_tasks.discard)
 
+    def _start_live_worker(self, job: CapturedJob) -> None:
+        if self._stream_worker_task is not None:
+            raise RuntimeError("live capture worker already exists")
+        task = asyncio.create_task(self._live_worker(job), name=f"spool-live-{job.job_id}")
+        self._stream_worker_task = task
+        self._persist_tasks.add(task)
+        task.add_done_callback(self._persist_tasks.discard)
+
+    async def _enqueue_stream(self, job: CapturedJob, command: tuple[Any, ...]) -> bool:
+        """Queue capture work without adding storage latency to relay traffic.
+
+        ``continue`` is the availability-first default.  Once its bounded
+        queue fills, this method records an explicit evidence gap and drops
+        this and all later capture commands for the connection.  ``abort`` is
+        intentionally allowed to apply backpressure and stop the session.
+        """
+        queue = self._required_stream_queue()
+        if self.config.storage_failure_policy == "abort":
+            await queue.put(command)
+            return True
+        try:
+            queue.put_nowait(command)
+        except asyncio.QueueFull:
+            self._mark_capture_degraded(
+                job,
+                "live spool queue capacity exhausted; RAW/timeline evidence is partial "
+                "from this point while relay traffic continued",
+            )
+            return False
+        return True
+
+    def _mark_capture_degraded(self, job: CapturedJob, reason: str) -> None:
+        if self._capture_degraded:
+            return
+        self._capture_degraded = True
+        self._capture_degrade_reason = reason
+        job.capture_complete = False
+        job.timeline_complete = False
+        job.capture_error = f"{job.capture_error}; {reason}" if job.capture_error else reason
+        job.timeline_error = f"{job.timeline_error}; {reason}" if job.timeline_error else reason
+        self.metrics.increment("jobs_failed")
+        self.logger.critical(
+            "RAW capture degraded because the bounded spool queue is unavailable; relay continues",
+            extra={
+                "event": "capture_spool_backpressure_degraded",
+                "fields": {
+                    "session_id": job.session_id,
+                    "connection_id": job.connection_id,
+                    "job_id": job.job_id,
+                    "storage_failure_policy": self.config.storage_failure_policy,
+                    "error": reason,
+                },
+            },
+        )
+
+    async def _next_stream_command(self) -> tuple[Any, ...] | None:
+        queue = self._required_stream_queue()
+        while True:
+            if self._stream_finalize_requested.is_set():
+                try:
+                    return queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return None
+
+            data_ready = asyncio.create_task(queue.get())
+            control_ready = asyncio.create_task(self._stream_control.get())
+            done, pending = await asyncio.wait(
+                {data_ready, control_ready},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if data_ready in done:
+                # If finalization raced with the data command, the persistent
+                # event ensures that the next iteration still observes it.
+                return data_ready.result()
+            # A control wake-up carries no data.  Re-check the event and drain
+            # all commands that were already accepted before publishing.
+
+    async def _live_worker(self, job: CapturedJob) -> None:
+        queue = self._required_stream_queue()
+        live: LiveSpoolCapture | None = None
+        try:
+            live = await asyncio.to_thread(self.storage.begin_live, job)
+            while True:
+                command = await self._next_stream_command()
+                if command is None:
+                    if self._capture_degraded:
+                        await asyncio.to_thread(
+                            live.close_incomplete,
+                            job,
+                            reason=self._capture_degrade_reason,
+                        )
+                        return
+                    result = await asyncio.to_thread(live.finalize, job)
+                    self._log_ready(job, result)
+                    return
+                try:
+                    operation = command[0]
+                    if operation == "append":
+                        _, sequence, direction, data, chunk = command
+                        await asyncio.to_thread(
+                            live.append,
+                            sequence=sequence,
+                            direction=direction,
+                            data=data,
+                            timeline_chunk=chunk,
+                        )
+                    elif operation == "drain":
+                        _, sequence, completed, drain_unix_ns, error = command
+                        await asyncio.to_thread(
+                            live.mark_local_write_drain,
+                            sequence=sequence,
+                            completed=completed,
+                            drain_unix_ns=drain_unix_ns,
+                            error=error,
+                        )
+                    else:
+                        raise RuntimeError(f"unknown live spool operation: {operation!r}")
+                finally:
+                    queue.task_done()
+        except Exception as exc:
+            await self._record_storage_failure(job, exc, live)
+
+    async def _record_storage_failure(
+        self,
+        job: CapturedJob,
+        exc: Exception,
+        live: LiveSpoolCapture | None,
+    ) -> None:
+        self._persist_errors.append(exc)
+        reason = f"live spool failure: {type(exc).__name__}: {exc}"
+        job.capture_complete = False
+        job.timeline_complete = False
+        job.capture_error = f"{job.capture_error}; {reason}" if job.capture_error else reason
+        job.timeline_error = f"{job.timeline_error}; {reason}" if job.timeline_error else reason
+        self.metrics.increment("jobs_failed")
+        if live is not None:
+            try:
+                await asyncio.to_thread(live.close_incomplete, job, reason=reason)
+            except Exception as cleanup_exc:
+                # The primary exception remains the authoritative failure.
+                # Cleanup is best effort and must not suppress its CRITICAL
+                # record or change the configured relay policy.
+                self.logger.error(
+                    "Failed to close incomplete RAW capture after storage error",
+                    extra={
+                        "event": "capture_spool_cleanup_failed",
+                        "fields": {
+                            "session_id": job.session_id,
+                            "job_id": job.job_id,
+                            "error": f"{type(cleanup_exc).__name__}: {cleanup_exc}",
+                        },
+                    },
+                )
+        self.logger.critical(
+            "Failed to append RAW capture; relay policy remains explicit",
+            exc_info=(type(exc), exc, exc.__traceback__),
+            extra={
+                "event": "capture_spool_failed",
+                "fields": {
+                    "session_id": job.session_id,
+                    "connection_id": job.connection_id,
+                    "job_id": job.job_id,
+                    "storage_failure_policy": self.config.storage_failure_policy,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            },
+        )
+
+    def _log_ready(self, job: CapturedJob, result: SpoolArchiveResult) -> None:
+        self.metrics.increment("jobs_completed")
+        event(
+            self.logger,
+            "capture_job_ready",
+            "Closed transport capture published to the parser spool",
+            session_id=job.session_id,
+            connection_id=job.connection_id,
+            job_id=job.job_id,
+            codice_doc=getattr(result, "code", None),
+            status=result.status,
+            manifest=str(result.manifest_path),
+        )
+
     async def _persist(self, job: CapturedJob) -> None:
         try:
-            result: ArchiveResult = await asyncio.to_thread(self.storage.archive, job)
-            self.metrics.increment("jobs_completed")
-            event(
-                self.logger,
-                "capture_segment_archived",
-                "Fallback-bounded capture segment archived",
-                session_id=job.session_id,
-                job_id=job.job_id,
-                status=result.status,
-                manifest=str(result.manifest_path),
-            )
+            result: SpoolArchiveResult = await asyncio.to_thread(self.storage.archive, job)
+            self._log_ready(job, result)
         except Exception as exc:
+            self._persist_errors.append(exc)
             self.metrics.increment("jobs_failed")
-            self.metrics.increment("render_errors")
-            self.logger.exception(
-                "Failed to archive captured job",
+            self.logger.critical(
+                "Failed to publish RAW capture; relay bytes were not modified",
+                exc_info=True,
                 extra={
-                    "event": "capture_segment_archive_failed",
-                    "fields": {"session_id": job.session_id, "job_id": job.job_id, "error": str(exc)},
+                    "event": "capture_spool_failed",
+                    "fields": {
+                        "session_id": job.session_id,
+                        "connection_id": job.connection_id,
+                        "job_id": job.job_id,
+                        "storage_failure_policy": self.config.storage_failure_policy,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
                 },
             )
 
     async def finalize(self, transport_status: str = "connection_closed") -> None:
-        """Seal the active capture and schedule persistence without waiting."""
         self._closed = True
         async with self._lock:
-            if self._idle_task is not None:
-                self._idle_task.cancel()
-                self._idle_task = None
             job = self._active
             self._active = None
             if job is not None:
-                if self._active_is_orphan_late_response:
-                    job.boundary_source = "orphan_late_response"
-                    job.boundary_confidence = 0.10
-                else:
-                    job.boundary_source = "fallback_connection_close"
-                    job.boundary_confidence = 0.15
-                self._active_is_orphan_late_response = False
                 job.finish(transport_status)
         if job is not None:
-            self._schedule_persist(job)
+            if self._streaming:
+                # Signalling is out-of-band: even a full queue or a blocked
+                # begin_live()/append() cannot hold connection teardown.
+                self._stream_finalize_requested.set()
+                self._stream_control.put_nowait(None)
+            else:
+                self._schedule_persist(job)
 
     async def wait_for_persistence(self) -> None:
-        """Wait for this session's already-scheduled archive tasks."""
         if self._persist_tasks:
             await asyncio.gather(*tuple(self._persist_tasks), return_exceptions=True)
+        if self._persist_errors and self.config.storage_failure_policy == "abort":
+            raise RuntimeError(f"RAW spool publication failed: {self._persist_errors[-1]}")

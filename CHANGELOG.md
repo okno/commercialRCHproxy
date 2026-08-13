@@ -2,6 +2,71 @@
 
 All notable changes follow Semantic Versioning.
 
+## [0.3.0] - 2026-08-13
+
+### Added
+
+- Independent `commercialrchproxy-dumper` and `commercialrchproxy-parser`
+  processes using one shared configuration and only a persistent filesystem
+  spool for coordination.
+- Connection-scoped, full-duplex RAW capture with separate request/response
+  files, nanosecond-form Unix filenames, per-receive timeline metadata, an
+  integrity manifest, and atomic `.ready` publication.
+- Persistent, locked, per-printer `CODICE_DOC` allocation with configurable
+  start/minimum width and no destructive rollover at four digits.
+- Parser backlog scanning, optional Linux inotify wake-ups with unconditional
+  polling fallback, configurable concurrency/retries, exclusive processing
+  markers, stale-claim recovery, terminal parse-failure markers, and
+  idempotent `.parsed` completion.
+- Literal `PHARSED` output containing one human-named TXT/PDF pair per
+  reconstructed semantic document and a `parsed.json` evidence record.
+- Evidence-gated C/G classification and management subtype candidates for
+  command, pre-account, conforming copy, and conservative generic management
+  output.
+- Separate hardened systemd units, component logs, and a legacy no-op launcher
+  for the former service name.
+- Offline dump inspection alias, network-free RAW-to-spool import, and safe
+  reparse with dry-run, code filter, immutable-input verification, and optional
+  human-timestamped `PHARSED` backup.
+- Architecture, spool, dump, protocol, state-machine, evidence-correlation,
+  migration, residual-limit, and updated test documentation.
+
+### Changed
+
+- One transport connection now creates one capture job. Semantic splitting is
+  deferred to the independent Parser; neither a TCP `recv()` nor an idle pause
+  is treated as a document boundary.
+- The Dumper no longer imports document parsing or rendering code and never
+  waits for TXT/PDF generation before relaying bytes.
+- The storage layout is now
+  `<printer>/YYYY/MM/DD/<CODICE_DOC>/`; Unix timestamps are confined to RAW
+  filenames and technical metadata, while parsed names use configured local
+  `HH.MM.SS.mmm` time with deterministic `_NN` collision suffixes.
+- The existing strict `KEY=VALUE` configuration remains shared and compatible,
+  with new durable-spool, identity, permission, counter, concurrency, watcher,
+  and storage-failure controls.
+
+### Evidence correction
+
+- The newly supplied private artifact set contains exactly one partial
+  235-byte request/202-byte response capture with 10 request frames, 9 response
+  frames, and 10 standalone ACK events; all complete frames pass the observed
+  length/BCC checks.
+- That single capture supports one incomplete commercial candidate. It is not
+  four captures and cannot byte-verify the separately photographed command,
+  pre-account, and conforming-copy documents.
+- Photographs remain ground truth for comparison only and are never Parser
+  input. Private identities, values, endpoints, timestamps, hashes, RAW, and
+  photographs remain outside the repository.
+
+### Migration notes
+
+- 0.2 parsed sidecars are not silently rewritten into the new spool contract.
+  Preserve the old archive and import selected directional RAW explicitly with
+  the offline replay tool.
+- Rolling back application code does not convert 0.3 jobs to the 0.2 layout.
+  Captured traffic is never automatically replayed to the fiscal device.
+
 ## [0.2.0] - 2026-08-11
 
 ### Added

@@ -1,0 +1,72 @@
+[Unit]
+Description=commercialRCHproxy persistent-spool receipt parser
+Documentation=https://github.com/okno/commercialRCHproxy/blob/main/docs/SYSTEMD.md
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=commercialrchproxy
+Group=commercialrchproxy
+UMask=0027
+# install.sh renders this default from configured OUTPUT_DIR.
+WorkingDirectory=/var/lib/commercialrchproxy/jobs
+Environment=PYTHONUNBUFFERED=1
+Environment=COMMERCIALRCHPROXY_CONFIG=/etc/commercialrchproxy/commercialrchproxy.conf
+SyslogIdentifier=commercialrchproxy-parser
+StandardOutput=journal
+StandardError=journal
+ExecStart=/opt/commercialrchproxy/current/venv/bin/commercialrchproxy-parser --config /etc/commercialrchproxy/commercialrchproxy.conf
+Restart=on-failure
+RestartPreventExitStatus=2
+RestartSec=3s
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+KillMode=mixed
+
+# Parsing requires no Linux capability and no IP networking.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=true
+PrivateNetwork=true
+IPAddressDeny=any
+
+# The parser can read immutable RAW jobs and may write only parser state and
+# PHARSED outputs below the job root plus its component log directory.
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/commercialrchproxy /opt/commercialrchproxy
+# install.sh renders both paths from configured OUTPUT_DIR and LOG_DIR.
+ReadWritePaths=/var/lib/commercialrchproxy/jobs /var/log/commercialrchproxy
+PrivateTmp=true
+PrivateDevices=true
+PrivateMounts=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+KeyringMode=private
+DevicePolicy=closed
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+LimitNOFILE=4096
+# At the configured maximum, each of 64 active jobs may use one executor
+# thread and one lease-heartbeat thread. Keep headroom for the main loop,
+# watcher and bounded logging worker.
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target
